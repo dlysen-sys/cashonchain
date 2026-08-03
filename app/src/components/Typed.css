@@ -1,0 +1,19 @@
+/* Blinking cursor — reproduced from the original bundle's CSS module. */
+@keyframes patrick-blink {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
+}
+.blinking-cursor {
+  color: inherit;
+  font: inherit;
+  left: 3px;
+  line-height: inherit;
+  opacity: 1;
+  position: relative;
+  top: 0;
+}
+.blinking-cursor.is-blinking {
+  animation-duration: 0.8s;
+  animation-iteration-count: infinite;
+  animation-name: patrick-blink;
+}
