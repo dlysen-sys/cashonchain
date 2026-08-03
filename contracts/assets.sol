@@ -51,6 +51,20 @@ interface ICOCTAccounts {
 }
 
 /* -------------------------------------------------------------------------- */
+/*                     ILiquidity (fee → LP routing surface)                  */
+/* -------------------------------------------------------------------------- */
+/// @title ILiquidity
+/// @notice The minimal COCTLiquidity surface the vault uses to route accumulated withdrawal fees into the
+///         USDT/COCT position (same shape the rewards hub calls). `addLiquidityUSDT` pulls USDT from the
+///         caller (approve first) and single-sidedly swaps ~90% to COCT before adding liquidity; `TOKENID`
+///         is 0 until the LP position is initialized (routing is disabled while 0).
+interface ILiquidity {
+    function addLiquidityUSDT(uint256 usdtAmount, uint24 slippageBps, uint256 deadline)
+        external returns (uint256);
+    function TOKENID() external view returns (uint256);
+}
+
+/* -------------------------------------------------------------------------- */
 /*                       ReentrancyGuard (minimal, inlined)                   */
 /* -------------------------------------------------------------------------- */
 /// @title ReentrancyGuard
@@ -113,6 +127,46 @@ contract COCTAssets is ReentrancyGuard {
     ///         these. Defaults to {20, 50, 100} USDT (18-dp). An EMPTY set disables the check (any amount
     ///         within min/max is allowed). Set with `setWithdrawalDenominations`.
     uint256[] public withdrawalDenominations;
+
+    /* ----------------------- Fee → liquidity routing ------------------- */
+    /// @notice BSC-mainnet USDT (18-dp) — the only token whose retained withdrawal fees are routed to the LP.
+    address public constant USDT = 0x55d398326f99059fF775485246999027B3197955;
+    /// @notice The COCTLiquidity manager that retained withdrawal fees are routed into (swap ~90% USDT→COCT
+    ///         + add liquidity). address(0) / uninitialized position disables routing — fees simply stay in
+    ///         the vault as unattributed surplus (the pre-routing behavior). Set with `setLiquidity`.
+    ILiquidity public liquidity;
+    /// @notice Max slippage (bps) handed to the LP manager when routing fees. Default 3%.
+    uint256 public liquiditySlippageBps = 300;
+    /// @notice Accrued USDT withdrawal fees are batched until they reach this amount, then routed in one call
+    ///         (avoids dust-sized swaps + per-withdrawal gas). 0 = route on every fee. Default 5 USDT.
+    uint256 public feeRouteThreshold = 5 ether;
+    /// @notice Withdrawal fees retained but NOT yet routed to the LP, per token. Routing draws this down;
+    ///         it never exceeds the vault's real surplus (routing is clamped so user balances are untouched).
+    mapping(address => uint256) public pendingFee;
+
+    /// @notice Emitted when a withdrawal fee is retained and added to the un-routed fee accumulator.
+    /// @param token The token the fee was taken in.
+    /// @param amount The fee amount retained by this withdrawal.
+    /// @param pending The new total un-routed fee for `token`.
+    event FeeAccrued(address indexed token, uint256 amount, uint256 pending);
+    /// @notice Emitted when accumulated USDT fees are successfully routed into the LP position.
+    /// @param usdtIn The USDT amount handed to the LP manager.
+    /// @param liquidityAdded The liquidity units the manager reported adding.
+    event FeeRouted(uint256 usdtIn, uint256 liquidityAdded);
+    /// @notice Emitted when a fee-routing attempt did not add liquidity (routing is best-effort; fees stay
+    ///         accrued for the next attempt and the withdrawal is never blocked).
+    /// @param usdtIn The USDT amount that was attempted.
+    /// @param reason The failure reason (revert string, "returned zero", or "unknown").
+    event FeeRoutingFailed(uint256 usdtIn, string reason);
+    /// @notice Emitted when the fee-routing LP manager is set (address(0) disables routing).
+    /// @param manager The new LP manager address.
+    event LiquiditySet(address indexed manager);
+    /// @notice Emitted when the fee-routing slippage tolerance changes.
+    /// @param bps The new slippage in basis points.
+    event LiquiditySlippageSet(uint256 bps);
+    /// @notice Emitted when the fee-routing batch threshold changes.
+    /// @param amount The new threshold (USDT, 18-dp; 0 = route every fee).
+    event FeeRouteThresholdSet(uint256 amount);
 
     /* ------------------------------- Events ---------------------------- */
     /// @notice Emitted when `user` deposits `amount` of `token` into their vault balance.
@@ -191,19 +245,24 @@ contract COCTAssets is ReentrancyGuard {
     /* ----------------------------- Constructor ------------------------- */
     /// @notice Deploy the vault wired to the COCT accounts (deploy the accounts first). `accounts` is
     ///         immutable — fixed here and never repointable — so pass the real accounts for the target
-    ///         network (BSC mainnet 0x4a4b…4216; the local address on anvil/testnet).
+    ///         network (BSC mainnet 0x4a4b…4216; the local address on anvil/testnet). The fee-routing LP
+    ///         manager may be set here (like the rewards hub) or deferred with address(0) and set later via
+    ///         `setLiquidity`; routing stays inert until the LP position is initialized (TOKENID != 0).
     /// @param accountsAddr The deployed COCT accounts contract (non-zero, must be a contract).
+    /// @param liquidityAddr The COCTLiquidity manager for withdrawal-fee routing; address(0) to defer.
     /// @dev Reverts ZERO_ACCOUNTS / NOT_CONTRACT.
-    constructor(address accountsAddr) {
+    constructor(address accountsAddr, address liquidityAddr) {
         require(accountsAddr != address(0), "ZERO_ACCOUNTS");
         require(accountsAddr.code.length > 0, "NOT_CONTRACT");
         accounts = ICOCTAccounts(accountsAddr);
+        liquidity = ILiquidity(liquidityAddr); // may be address(0) to defer fee routing (set later via setLiquidity)
         // Default withdrawal denominations: $20 / $50 / $100 (USDT, 18-dp).
         withdrawalDenominations.push(20 ether);
         withdrawalDenominations.push(50 ether);
         withdrawalDenominations.push(100 ether);
         emit AccountsSet(accountsAddr);
         emit WithdrawalDenominationsSet(withdrawalDenominations);
+        if (liquidityAddr != address(0)) emit LiquiditySet(liquidityAddr);
     }
 
     /* ============================ USER — DEPOSIT ======================== */
@@ -395,6 +454,36 @@ contract COCTAssets is ReentrancyGuard {
         emit WithdrawalDenominationsSet(withdrawalDenominations);
     }
 
+    /// @notice Set the LP manager that retained withdrawal fees are routed into. Pass address(0) to disable
+    ///         routing (fees then simply accumulate as vault surplus). Auth-gated.
+    /// @param manager The COCTLiquidity manager (or address(0)).
+    function setLiquidity(address manager) external onlyAuth {
+        liquidity = ILiquidity(manager);
+        emit LiquiditySet(manager);
+    }
+
+    /// @notice Set the fee-routing slippage tolerance (bps, ≤ 50%). Auth-gated.
+    /// @param bps The new slippage in basis points.
+    function setLiquiditySlippage(uint256 bps) external onlyAuth {
+        require(bps <= 5000, "SLIPPAGE_TOO_HIGH");
+        liquiditySlippageBps = bps;
+        emit LiquiditySlippageSet(bps);
+    }
+
+    /// @notice Set the batch threshold: accrued USDT fees are routed once they reach this amount (0 = route
+    ///         on every fee). Auth-gated.
+    /// @param amount The new threshold (USDT, 18-dp).
+    function setFeeRouteThreshold(uint256 amount) external onlyAuth {
+        feeRouteThreshold = amount;
+        emit FeeRouteThresholdSet(amount);
+    }
+
+    /// @notice Manually route accrued USDT fees into the LP now, ignoring the batch threshold (e.g. to flush
+    ///         a sub-threshold remainder). Best-effort + surplus-clamped like the automatic path. Auth-gated.
+    function flushFees() external onlyAuth nonReentrant {
+        _routeFees(false);
+    }
+
     /* ============================== VIEWS ============================== */
     /// @notice A user's vault balance for a token.
     /// @param user The account to query.
@@ -477,6 +566,63 @@ contract COCTAssets is ReentrancyGuard {
         require(sent > 0, "NET_ZERO");
 
         _safeTransfer(tokenAddress, account, sent);
+
+        // Retained fee → accrue, then (for USDT) best-effort route the batch into the LP. Routing is
+        // clamped to real surplus and wrapped in try/catch, so it can never touch user balances or block
+        // the withdrawal. Runs after the payout (CEI: all ledger effects already applied above).
+        if (fee > 0) {
+            pendingFee[tokenAddress] += fee;
+            emit FeeAccrued(tokenAddress, fee, pendingFee[tokenAddress]);
+            if (tokenAddress == USDT) _routeFees(true);
+        }
+    }
+
+    /* --------------------- Fee → liquidity routing --------------------- */
+    /// @dev Route accrued USDT fees into the LP (swap ~90% USDT→COCT + add liquidity). Best-effort: never
+    ///      reverts the caller. SOLVENCY: the routed amount is clamped to the vault's real surplus
+    ///      (holdings − totalTracked), so it can only ever move fee/unattributed funds and never touches
+    ///      USDT that backs a user's balance. Draws `pendingFee[USDT]` down only when the LP actually
+    ///      consumed the USDT (added > 0). No-op if the manager isn't ready or (respectThreshold) the batch
+    ///      hasn't reached `feeRouteThreshold`.
+    /// @param respectThreshold When true, only route once `pendingFee[USDT] >= feeRouteThreshold`.
+    function _routeFees(bool respectThreshold) internal {
+        ILiquidity lp = liquidity;
+        if (!_managerReady(lp)) return;
+
+        uint256 pending = pendingFee[USDT];
+        if (pending == 0) return;
+        if (respectThreshold && pending < feeRouteThreshold) return;
+
+        // Clamp to real surplus so routing can never dip into user-backed funds.
+        uint256 surplusNow = IERC20(USDT).balanceOf(address(this)) - totalTracked[USDT];
+        uint256 routable = pending < surplusNow ? pending : surplusNow;
+        if (routable == 0) return;
+
+        _safeApprove(USDT, address(lp), routable);
+        try lp.addLiquidityUSDT(routable, uint24(liquiditySlippageBps), block.timestamp + 600) returns (uint256 added) {
+            if (added > 0) {
+                pendingFee[USDT] = pending - routable; // consumed by the LP
+                emit FeeRouted(routable, added);
+            } else {
+                // Pre-pull guard short-circuited without taking USDT — keep it accrued for next time.
+                emit FeeRoutingFailed(routable, "returned zero");
+            }
+        } catch Error(string memory reason) {
+            emit FeeRoutingFailed(routable, reason); // reverted → USDT rolled back into the vault; keep accrued
+        } catch {
+            emit FeeRoutingFailed(routable, "unknown");
+        }
+        _safeApprove(USDT, address(lp), 0);
+    }
+
+    /// @dev Is the LP manager present, coded, and holding an initialized position (TOKENID != 0)?
+    function _managerReady(ILiquidity lp) internal view returns (bool) {
+        if (address(lp) == address(0) || address(lp).code.length == 0) return false;
+        try lp.TOKENID() returns (uint256 id) {
+            return id != 0;
+        } catch {
+            return false;
+        }
     }
 
     /* ---------------------- Safe BEP20 transfer helpers ---------------- */
@@ -495,5 +641,12 @@ contract COCTAssets is ReentrancyGuard {
             abi.encodeWithSelector(IERC20.transferFrom.selector, from, to, value)
         );
         require(ok && (data.length == 0 || abi.decode(data, (bool))), "TRANSFER_FROM_FAILED");
+    }
+
+    /// @dev approve that tolerates non-returning tokens (used to let the LP manager pull routed fees).
+    function _safeApprove(address token, address spender, uint256 value) internal {
+        require(token.code.length > 0, "NOT_CONTRACT");
+        (bool ok, bytes memory data) = token.call(abi.encodeWithSelector(IERC20.approve.selector, spender, value));
+        require(ok && (data.length == 0 || abi.decode(data, (bool))), "APPROVE_FAILED");
     }
 }
