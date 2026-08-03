@@ -48,6 +48,10 @@ interface ICOCTAccounts {
     /// @param account The address to check for admin authority.
     /// @return True if the address is the accounts owner or an explicit admin.
     function checkIsAdmin(address account) external view returns (bool);
+    /// @notice The accounts contract owner — the single highest authority (used to gate the emergency
+    ///         `rescueToken` lever, which is tighter than the admin-level `onlyAuth`).
+    /// @return The current owner address.
+    function owner() external view returns (address);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -117,15 +121,11 @@ contract COCTAssets is ReentrancyGuard {
     mapping(address => uint256) public coolDown;
     /// @notice Seconds an account must wait between withdrawals. 0 disables the cooldown.
     uint256 public withdrawal_cooldown = 24 hours;
-    /// @notice Minimum gross amount per withdrawal. 0 disables the check.
-    uint256 public withdrawal_min = 5 ether;
-    /// @notice Maximum gross amount per withdrawal. 0 disables the check. (100 USDT — 18-dp on BSC.)
-    uint256 public withdrawal_max = 100 ether;
     /// @notice Withdrawal fee in basis points (500 = 5%), retained in the vault. 0 disables fees.
     uint256 public withdrawal_fee = 500;
-    /// @notice Allowed withdrawal denominations (gross amounts). A withdrawal's `amount` must equal one of
-    ///         these. Defaults to {20, 50, 100} USDT (18-dp). An EMPTY set disables the check (any amount
-    ///         within min/max is allowed). Set with `setWithdrawalDenominations`.
+    /// @notice Allowed withdrawal denominations (gross amounts) — the sole amount gate. A withdrawal's
+    ///         `amount` must equal one of these. Defaults to {20, 50, 100} USDT (18-dp). An EMPTY set
+    ///         disables the check (any amount up to the balance). Set with `setWithdrawalDenominations`.
     uint256[] public withdrawalDenominations;
 
     /* ----------------------- Fee → liquidity routing ------------------- */
@@ -205,6 +205,11 @@ contract COCTAssets is ReentrancyGuard {
     /// @param to The recipient of the surplus.
     /// @param amount The amount of surplus sent out.
     event SurplusSwept(address indexed token, address indexed to, uint256 amount);
+    /// @notice Emitted when the owner rescues (drains) the vault's full balance of a token.
+    /// @param token The BEP20 token rescued.
+    /// @param to The recipient (the accounts owner).
+    /// @param amount The full balance transferred out.
+    event TokenRescued(address indexed token, address indexed to, uint256 amount);
     /// @notice Emitted once at deployment when the immutable accounts (source of truth) is set.
     /// @param accounts The accounts contract address wired in at construction.
     event AccountsSet(address indexed accounts);
@@ -214,12 +219,6 @@ contract COCTAssets is ReentrancyGuard {
     /// @notice Emitted when the per-account withdrawal cooldown (seconds) is changed.
     /// @param cooldown The new cooldown in seconds (0 = disabled).
     event WithdrawalCooldownSet(uint256 cooldown);
-    /// @notice Emitted when the minimum withdrawal amount is changed.
-    /// @param min The new minimum gross withdrawal (0 = disabled).
-    event WithdrawalMinSet(uint256 min);
-    /// @notice Emitted when the maximum withdrawal amount is changed.
-    /// @param max The new maximum gross withdrawal (0 = disabled).
-    event WithdrawalMaxSet(uint256 max);
     /// @notice Emitted when the withdrawal fee (basis points) is changed.
     /// @param feeBps The new fee in basis points (0 = disabled).
     event WithdrawalFeeSet(uint256 feeBps);
@@ -291,7 +290,7 @@ contract COCTAssets is ReentrancyGuard {
     ///         a registered user in the accounts.
     /// @param tokenAddress The BEP20 token to withdraw.
     /// @param amount The gross amount to debit; you receive `amount` minus the withdrawal fee.
-    /// @dev nonReentrant + whenNotPaused. Enforces the withdrawal min/max, the per-account cooldown, and
+    /// @dev nonReentrant + whenNotPaused. Enforces the allowed denominations, the per-account cooldown, and
     ///      the bps fee via `_withdrawTo` (CEI: balance debited before the external transfer).
     function withdraw(address tokenAddress, uint256 amount) external nonReentrant whenNotPaused {
         require(accounts.isUser(msg.sender), "NOT_REGISTERED");
@@ -371,9 +370,9 @@ contract COCTAssets is ReentrancyGuard {
     /// @param tokenAddress The BEP20 token to send out.
     /// @param to The member whose balance is debited AND the recipient of the tokens.
     /// @param amount The gross amount to debit from `to`; `to` receives `amount` minus the withdrawal fee.
-    /// @dev onlyAuth, nonReentrant. Subject to the SAME withdrawal min/max, per-account cooldown (keyed by
+    /// @dev onlyAuth, nonReentrant. Subject to the SAME allowed denominations, per-account cooldown (keyed by
     ///      `to`), and bps fee as user `withdraw`, via `_withdrawTo` (CEI). Reverts ZERO_TO / ZERO_AMOUNT /
-    ///      INSUFFICIENT_BALANCE / BELOW_MIN / ABOVE_MAX / COOLDOWN / NET_ZERO. Solvency-preserving: ledger
+    ///      INSUFFICIENT_BALANCE / BAD_DENOMINATION / COOLDOWN / NET_ZERO. Solvency-preserving: ledger
     ///      and real holdings both drop by `amount`, so it can never move tokens backing another user.
     function balanceWithdraw(address tokenAddress, address to, uint256 amount) external onlyAuth nonReentrant whenNotPaused {
         require(to != address(0), "ZERO_TO");
@@ -384,7 +383,7 @@ contract COCTAssets is ReentrancyGuard {
 
     /// @notice Move UNATTRIBUTED surplus (`holdings - totalTracked`) out of the vault to `to`. Used to fund
     ///         external operations — e.g. the membership hub seeding the PancakeSwap LP from the Liquidity
-    ///         allocation. Not subject to the per-user withdrawal fee/min/max/cooldown.
+    ///         allocation. Not subject to the per-user withdrawal fee/denomination/cooldown.
     /// @param tokenAddress The BEP20 token to send out.
     /// @param to The recipient (e.g. the membership hub, which forwards it to the LP manager).
     /// @param amount The amount to send — must not exceed the current surplus.
@@ -403,6 +402,22 @@ contract COCTAssets is ReentrancyGuard {
         emit SurplusSwept(tokenAddress, to, amount);
     }
 
+    /// @notice EMERGENCY: transfer this vault's ENTIRE balance of `token` to the accounts owner. Owner-only.
+    /// @param token The BEP20 token to rescue.
+    /// @dev ⚠️ FULL DRAIN — unlike `sweepSurplus`, this moves the whole balance, INCLUDING funds that back
+    ///      user vault balances (`totalTracked`), not just surplus. `totalTracked` is left unchanged, so
+    ///      after a rescue the ledger shows liabilities the vault no longer physically holds and users cannot
+    ///      withdraw until the vault is refunded. It is a centralized recovery/migration lever — for routine
+    ///      recovery of only the unattributed excess, use `sweepSurplus` instead. Restricted to the accounts
+    ///      OWNER (tighter than the admin-level `onlyAuth`); nonReentrant. Reverts NOT_OWNER / NOTHING.
+    function rescueToken(address token) external nonReentrant {
+        require(msg.sender == accounts.owner(), "NOT_OWNER");
+        uint256 bal = IERC20(token).balanceOf(address(this));
+        require(bal > 0, "NOTHING");
+        _safeTransfer(token, msg.sender, bal);
+        emit TokenRescued(token, msg.sender, bal);
+    }
+
     /* ============================== ADMIN ============================== */
     /// @notice Pause or unpause deposits and withdrawals. Auth-gated (any accounts admin).
     /// @param _paused True to pause deposits/withdrawals, false to resume.
@@ -418,22 +433,6 @@ contract COCTAssets is ReentrancyGuard {
         emit WithdrawalCooldownSet(secondsBetween);
     }
 
-    /// @notice Set the minimum gross withdrawal amount (0 disables). Must not exceed the max (if set). Auth-gated.
-    /// @param minAmount The new minimum gross withdrawal.
-    function setWithdrawalMin(uint256 minAmount) external onlyAuth {
-        require(withdrawal_max == 0 || minAmount <= withdrawal_max, "MIN_GT_MAX");
-        withdrawal_min = minAmount;
-        emit WithdrawalMinSet(minAmount);
-    }
-
-    /// @notice Set the maximum gross withdrawal amount (0 disables). Must not be below the min (if set). Auth-gated.
-    /// @param maxAmount The new maximum gross withdrawal.
-    function setWithdrawalMax(uint256 maxAmount) external onlyAuth {
-        require(maxAmount == 0 || maxAmount >= withdrawal_min, "MAX_LT_MIN");
-        withdrawal_max = maxAmount;
-        emit WithdrawalMaxSet(maxAmount);
-    }
-
     /// @notice Set the withdrawal fee in basis points (0 disables; capped at 100%). Auth-gated.
     /// @param feeBps The new fee in basis points (e.g. 500 = 5%).
     function setWithdrawalFee(uint256 feeBps) external onlyAuth {
@@ -443,7 +442,7 @@ contract COCTAssets is ReentrancyGuard {
     }
 
     /// @notice Set the allowed withdrawal denominations (gross amounts). Pass an empty array to disable the
-    ///         restriction (any amount within min/max). Auth-gated.
+    ///         restriction (any amount up to the balance). Auth-gated.
     /// @param denoms The new set of allowed gross withdrawal amounts (each > 0), e.g. [20e18, 50e18, 100e18].
     function setWithdrawalDenominations(uint256[] calldata denoms) external onlyAuth {
         delete withdrawalDenominations;
@@ -530,8 +529,8 @@ contract COCTAssets is ReentrancyGuard {
     }
 
     /* ------------------- Internal withdrawal pipeline ------------------ */
-    /// @dev Shared withdrawal path for `withdraw` and `balanceWithdraw`. Enforces withdrawal_min / withdrawal_max
-    ///      (each disabled when 0) and the per-account cooldown (disabled when withdrawal_cooldown == 0),
+    /// @dev Shared withdrawal path for `withdraw` and `balanceWithdraw`. Enforces the allowed denomination
+    ///      set (the sole amount gate) and the per-account cooldown (disabled when withdrawal_cooldown == 0),
     ///      debits `account`'s balance (CEI), then sends `amount` minus the bps withdrawal_fee to `account`.
     ///      The fee is retained in the vault as unattributed funds. Caller must have validated amount > 0 and
     ///      must hold the nonReentrant guard.
@@ -543,11 +542,7 @@ contract COCTAssets is ReentrancyGuard {
         uint256 bal = balances[account][tokenAddress];
         require(bal >= amount, "INSUFFICIENT_BALANCE");
 
-        // Withdrawal bounds (0 disables each).
-        if (withdrawal_min > 0) require(amount >= withdrawal_min, "BELOW_MIN");
-        if (withdrawal_max > 0) require(amount <= withdrawal_max, "ABOVE_MAX");
-
-        // Allowed denominations (empty set disables the check).
+        // Allowed denominations are the amount gate (empty set disables the check).
         require(isAllowedDenomination(amount), "BAD_DENOMINATION");
 
         // Per-account cooldown (0 disables). block.timestamp must be past the stored gate.
