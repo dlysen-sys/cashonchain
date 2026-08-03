@@ -3,6 +3,7 @@ import { useAccount, useReadContract } from "wagmi";
 import { readContract } from "@wagmi/core";
 import { wagmiConfig } from "../lib/appkit.js";
 import { shortAddr } from "../lib/format.js";
+import { affiliateLink } from "../lib/affiliate.js";
 import { contractsFor } from "../config/contracts.js";
 import { accountsAbi } from "../config/abis.js";
 
@@ -63,6 +64,8 @@ export default function Tree() {
                   </div>
                 ) : (
                   <>
+                    <AffiliateLinkCard address={address} />
+
                     <div className="coc-tree__tabs">
                       <button
                         className={`cw-btn ${tab === "affiliate" ? "cw-btn--primary" : ""}`}
@@ -90,6 +93,42 @@ export default function Tree() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ------------------------------ Affiliate link ----------------------------- */
+// Your shareable referral link (<origin>/#/<yourAddress>). Anyone who opens it gets you set as their
+// sponsor automatically on the Account registration form.
+function AffiliateLinkCard({ address }) {
+  const link = affiliateLink(address);
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch {
+      /* clipboard blocked — user can still select the text */
+    }
+  };
+
+  if (!link) return null;
+  return (
+    <div className="cw-tokens">
+      <div className="cw-eyebrow">Your affiliate link</div>
+      <div className="cw-token card-box" style={{ gap: 12, alignItems: "center" }}>
+        <span style={{ flex: 1, minWidth: 0, wordBreak: "break-all", fontSize: 13 }} title={link}>
+          {link}
+        </span>
+        <button type="button" className="cw-claim" onClick={copy} style={{ flexShrink: 0 }}>
+          {copied ? "Copied ✓" : "Copy"}
+        </button>
+      </div>
+      <p className="cw-modal-sub" style={{ opacity: 0.7, margin: "6px 2px 0" }}>
+        Share this link — new members who open it get you set as their sponsor automatically.
+      </p>
     </div>
   );
 }

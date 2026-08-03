@@ -13,6 +13,7 @@ import { shortAddr, amt } from "../lib/format.js";
 import MembershipCard, { addrToCardId } from "../components/MembershipCard.jsx";
 import { contractsFor } from "../config/contracts.js";
 import { accountsAbi, rewardsAbi, assetsAbi } from "../config/abis.js";
+import { getStoredSponsor, clearStoredSponsor } from "../lib/affiliate.js";
 
 const RANKS = ["Silver", "Gold", "Platinum", "Diamond", "Emerald", "Black Diamond"];
 const MIN_DEPOSIT = 20; // USDT — smallest membership tier; block anything below this in the UI
@@ -72,6 +73,7 @@ export default function Account() {
 
   // ---- register (write) ----
   const [sponsor, setSponsor] = useState("");
+  const [fromReferral, setFromReferral] = useState(false); // sponsor auto-filled from an affiliate link
   const [status, setStatus] = useState("idle"); // idle | pending | success | error
   const [error, setError] = useState(null);
   const [txHash, setTxHash] = useState(undefined);
@@ -82,14 +84,31 @@ export default function Account() {
     query: { enabled: !!txHash },
   });
 
+  // Auto-fill the sponsor field: prefer a sponsor captured from an affiliate link (localStorage), else the
+  // company root. A self-referral (stored sponsor == your own wallet) is invalid — ignore & clear it.
   useEffect(() => {
-    if (rootAddr && !sponsor) setSponsor(rootAddr);
-  }, [rootAddr]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (sponsor) return;
+    const stored = getStoredSponsor();
+    if (stored && address && stored.toLowerCase() === address.toLowerCase()) {
+      clearStoredSponsor(); // can't sponsor yourself
+    } else if (stored) {
+      setSponsor(stored);
+      setFromReferral(true);
+      return;
+    }
+    if (rootAddr) setSponsor(rootAddr);
+  }, [rootAddr, address]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Once the register tx mines, flip to the account view.
+  // If the connected wallet is already registered, the stored sponsor is moot — delete it.
+  useEffect(() => {
+    if (isUser === true) clearStoredSponsor();
+  }, [isUser]);
+
+  // Once the register tx mines, flip to the account view and clear the used sponsor link.
   useEffect(() => {
     if (txMined) {
       setStatus("success");
+      clearStoredSponsor();
       refetchIsUser();
       refetchInfo?.();
     }
@@ -321,10 +340,18 @@ export default function Account() {
                       <label>Sponsor address</label>
                       <input
                         value={sponsor}
-                        onChange={(e) => setSponsor(e.target.value)}
+                        onChange={(e) => {
+                          setSponsor(e.target.value);
+                          setFromReferral(false);
+                        }}
                         placeholder="0x…"
                         disabled={busy}
                       />
+                      {fromReferral && (
+                        <p className="cw-modal-sub" style={{ color: "var(--cw-accent)", margin: "6px 2px 0" }}>
+                          <i className="la la-link"></i> Sponsor pre-filled from your referral link.
+                        </p>
+                      )}
                     </div>
                     <button
                       type="submit"
