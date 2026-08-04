@@ -114,6 +114,7 @@ export const rewardsAbi = [
           { name: "rank", type: "uint8" },
           { name: "incomeCap", type: "uint256" },
           { name: "tokenBalance", type: "uint256" },
+          { name: "rewardsBalance", type: "uint256" },
           { name: "pendingDaily", type: "uint256" },
           { name: "pendingDirect", type: "uint256" },
           { name: "pendingLine", type: "uint256" },
@@ -140,11 +141,21 @@ export const rewardsAbi = [
     inputs: [{ name: "", type: "address" }],
     outputs: [{ type: "uint256" }],
   },
-  // Claims — each pays the accrued pending to the caller's vault (or COCT for claimToken).
+  {
+    // public mapping getter: rewardsBalance(address) => accrued, not-yet-withdrawn reward income (USDT, 18dp).
+    type: "function",
+    name: "rewardsBalance",
+    stateMutability: "view",
+    inputs: [{ name: "", type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  // Claims — each realizes the accrued pending stream into the caller's rewardsBalance ledger (no fee).
   { type: "function", name: "claimDailyPassive", stateMutability: "nonpayable", inputs: [], outputs: [] },
   { type: "function", name: "claimDirectPassive", stateMutability: "nonpayable", inputs: [], outputs: [] },
   { type: "function", name: "claimLineIncome", stateMutability: "nonpayable", inputs: [], outputs: [] },
   { type: "function", name: "claimToken", stateMutability: "nonpayable", inputs: [], outputs: [] },
+  // Withdraw the rewardsBalance ledger to the vault (stability fee deducted + routed to LP).
+  { type: "function", name: "withdrawRewards", stateMutability: "nonpayable", inputs: [], outputs: [] },
 ];
 
 export const assetsAbi = [

@@ -7,6 +7,9 @@
 import { isAddress, getAddress } from "viem";
 
 const SPONSOR_KEY = "coc_sponsor";
+// How long a captured sponsor stays valid in localStorage. After this it's treated as not-set (the
+// registration field goes empty). 7 days — a typical affiliate attribution window.
+const SPONSOR_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Build the shareable affiliate link for `address` (checksummed), or "" if `address` is missing/invalid. */
 export function affiliateLink(address) {
@@ -14,22 +17,30 @@ export function affiliateLink(address) {
   return `${window.location.origin}/#/${getAddress(address)}`;
 }
 
-/** The stored sponsor address (checksummed), or "" if none / invalid. */
+/** The stored sponsor address (checksummed), or "" if none / invalid / expired. Expired or malformed
+ *  records are cleared as a side effect, so the registration field falls back to empty. */
 export function getStoredSponsor() {
   try {
-    const v = localStorage.getItem(SPONSOR_KEY);
-    return v && isAddress(v) ? getAddress(v) : "";
+    const raw = localStorage.getItem(SPONSOR_KEY);
+    if (!raw) return "";
+    const rec = JSON.parse(raw); // { addr, exp }
+    if (!rec || !rec.addr || !isAddress(rec.addr) || typeof rec.exp !== "number" || Date.now() > rec.exp) {
+      clearStoredSponsor(); // not-set / malformed / expired → treat as empty
+      return "";
+    }
+    return getAddress(rec.addr);
   } catch {
+    clearStoredSponsor(); // legacy plain-string value or bad JSON → drop it
     return "";
   }
 }
 
-/** Persist a sponsor address if valid; returns the stored (checksummed) value, or "". */
+/** Persist a sponsor address (with a TTL) if valid; returns the stored (checksummed) value, or "". */
 export function setStoredSponsor(address) {
   try {
     if (address && isAddress(address)) {
       const a = getAddress(address);
-      localStorage.setItem(SPONSOR_KEY, a);
+      localStorage.setItem(SPONSOR_KEY, JSON.stringify({ addr: a, exp: Date.now() + SPONSOR_TTL_MS }));
       return a;
     }
   } catch {

@@ -174,10 +174,9 @@ contract COCTRewards is ReentrancyGuard, Ownable {
     /// @notice Receives the 5% Leaders Group Sales allocation.
     address public leadersWallet;
     /// @notice THE REWARD POOL — receives the retained Token-Liquidity share (40% when LP is live, else
-    ///         80%). All earnings are paid FROM this account's vault balance via balanceTransfer.
+    ///         80%). All earnings are paid FROM this account's vault balance via balanceTransfer on
+    ///         `withdrawRewards`.
     address public liquidityWallet;
-    /// @notice Receives the COC Stability Contribution fees taken on daily-passive claims.
-    address public stabilityWallet;
 
     /* --------------------------- Split (bps of entry) ------------------ */
     uint256 public adminBps = 1_000;          // 10%
@@ -207,8 +206,8 @@ contract COCTRewards is ReentrancyGuard, Ownable {
     uint256[6] public tierProductBps;
     /// @notice Override % (bps) per tier: [0,0,2,3,4,5]%.
     uint256[6] public tierOverrideBps;
-    /// @notice Daily-passive stability fee (bps) per tier for Silver..Emerald; Black Diamond (index 5) uses
-    ///         bdStabilityBps instead (cycle-scaled).
+    /// @notice Stability fee (bps) per tier for Silver..Emerald, applied on `withdrawRewards`; Black Diamond
+    ///         (index 5) uses bdStabilityBps instead (cycle-scaled).
     uint256[6] public tierStabilityBps;
     /// @notice Black Diamond stability fee (bps) by BD cycle: [1st,2nd,3rd,4th,5th+] = [10,15,20,25,30]%.
     uint256[5] public bdStabilityBps;
@@ -233,6 +232,10 @@ contract COCTRewards is ReentrancyGuard, Ownable {
     mapping(address => uint256) public incomeCap;
     /// @notice Accrued product entitlement (USDT-value); redeemed to COCT in a later phase.
     mapping(address => uint256) public tokenBalance;
+    /// @notice Accrued, not-yet-withdrawn reward income (USDT-value). EVERY earning stream — direct
+    ///         referral, override, and the daily/direct/line passive claims — credits this ledger; no funds
+    ///         move to the vault until `withdrawRewards`, where the `_stabilityBpsOf` fee is applied once.
+    mapping(address => uint256) public rewardsBalance;
 
     /// @notice Own daily-passive mirrors (seeded at the member's own activation).
     mapping(address => PassiveData[]) public passive;
@@ -263,12 +266,15 @@ contract COCTRewards is ReentrancyGuard, Ownable {
     event DirectPassiveSeeded(address indexed earner, address indexed source, uint256 principal);
     event LineIncomeSeeded(address indexed earner, address indexed source, uint256 level, uint256 principal);
     event OverridePaid(address indexed earner, address indexed source, uint256 amount);
-    event DailyPassiveClaimed(address indexed user, uint256 gross, uint256 fee, uint256 net);
+    event DailyPassiveClaimed(address indexed user, uint256 amount);
     event DirectPassiveClaimed(address indexed user, uint256 amount);
     event LineIncomeClaimed(address indexed user, uint256 amount);
+    /// @notice Emitted when a member withdraws accrued rewards: `gross` drawn from the ledger (pool-clamped),
+    ///         `fee` = stability fee routed to the LP, `net` credited to the member's vault balance.
+    event RewardsWithdrawn(address indexed user, uint256 gross, uint256 fee, uint256 net);
     event LiquidityRouted(uint256 usdtIn, uint256 liquidityAdded);
     event LiquidityRoutingFailed(uint256 usdtIn, string reason);
-    event WalletsSet(address admin, address marketing, address leaders, address liquidity, address stability);
+    event WalletsSet(address admin, address marketing, address leaders, address liquidity);
     event SplitSet(uint256 admin, uint256 marketing, uint256 leaders, uint256 tokenLiquidity, uint256 lp);
     event EarningParamsSet(uint256 directReferralBps, uint256 directPassiveBps, uint256 lineIncomeBps, uint256 lineLevels, uint256 overrideMaxDepth, uint256 dailyPassiveBps, uint256 passiveCapBps, uint256 incomeCapBps);
     event TierTableSet(uint256[6] entry, uint256[6] productBps, uint256[6] overrideBps, uint256[6] stabilityBps);
@@ -305,7 +311,6 @@ contract COCTRewards is ReentrancyGuard, Ownable {
         marketingWallet = msg.sender;
         leadersWallet = msg.sender;
         liquidityWallet = msg.sender;
-        stabilityWallet = msg.sender;
 
         tierEntry = [uint256(20 ether), 50 ether, 100 ether, 500 ether, 1000 ether, 5000 ether];
         tierProductBps = [uint256(0), 100, 200, 300, 400, 500];
@@ -318,8 +323,12 @@ contract COCTRewards is ReentrancyGuard, Ownable {
 
     /* ============================== REGISTER =========================== */
     /// @notice Register into the COC referral tree under `sponsor`. Free; the entry is paid at `activate`.
+    ///         Membership is EOA-only: smart-contract wallets (Safe / ERC-4337) are blocked here, at signup —
+    ///         before any funds are committed — so they never reach `activate`/`withdrawRewards` with trapped
+    ///         funds. (Admins can still add non-EOA members directly via accounts.addUser.)
     /// @param sponsor An existing registered member to sponsor the caller.
     function register(address sponsor) external whenNotPaused {
+        require(msg.sender == tx.origin, "CALLER_NOT_EOA");
         accounts.addUser(msg.sender, sponsor); // enforces not-registered / sponsor-exists / not-self / non-zero
         emit Registered(msg.sender, sponsor);
     }
@@ -361,7 +370,7 @@ contract COCTRewards is ReentrancyGuard, Ownable {
         (address sponsor, ) = accounts.getAffiliate(u);
 
         // 4a) Direct Referral 5% → referral-L1 sponsor, instant (capped, pool-funded).
-        uint256 paidRef = _payCapped(sponsor, (amount * directReferralBps) / BPS);
+        uint256 paidRef = _accrueReward(sponsor, (amount * directReferralBps) / BPS);
         if (paidRef > 0) {
             directReferralTotal[sponsor] += paidRef;
             emit DirectReferralPaid(sponsor, u, paidRef);
@@ -420,20 +429,16 @@ contract COCTRewards is ReentrancyGuard, Ownable {
     }
 
     /* --------------------------- Earning helpers ----------------------- */
-    /// @dev Pay `amount` to `earner` from the reward pool, clamped to their remaining income cap AND the
-    ///      pool balance (never reverts on a dry pool — pays what is available). Draws the cap by the amount
-    ///      paid. Skips root / zero / inactive. Returns the amount actually paid.
-    function _payCapped(address earner, uint256 amount) internal returns (uint256 paid) {
+    /// @dev Accrue `amount` of reward to `earner`, clamped to their remaining income cap. No funds move here —
+    ///      it credits the `rewardsBalance` ledger and draws the cap; the pool is only touched at
+    ///      `withdrawRewards`. Skips root / zero / inactive. Returns the amount actually accrued.
+    function _accrueReward(address earner, uint256 amount) internal returns (uint256 accrued) {
         if (amount == 0 || earner == address(0) || earner == root) return 0;
         uint256 cap = incomeCap[earner];
         if (cap == 0) return 0;
-        uint256 poolBal = assets.balanceOf(liquidityWallet, USDT);
-        paid = amount;
-        if (paid > cap) paid = cap;
-        if (paid > poolBal) paid = poolBal;
-        if (paid == 0) return 0;
-        incomeCap[earner] = cap - paid;
-        assets.balanceTransfer(liquidityWallet, earner, USDT, paid);
+        accrued = amount > cap ? cap : amount; // clamp to remaining cap
+        incomeCap[earner] = cap - accrued;
+        rewardsBalance[earner] += accrued;
     }
 
     /// @dev Seed a mirror tranche (no-op on zero principal or when the array is at maxPackages).
@@ -470,7 +475,7 @@ contract COCTRewards is ReentrancyGuard, Ownable {
             if (up == address(0) || up == root) break;
             uint256 upBps = _overrideBpsOf(up);
             if (upBps > childBps) {
-                uint256 paid = _payCapped(up, (amount * (upBps - childBps)) / BPS);
+                uint256 paid = _accrueReward(up, (amount * (upBps - childBps)) / BPS);
                 if (paid > 0) {
                     overrideTotal[up] += paid;
                     emit OverridePaid(up, activator, paid);
@@ -482,40 +487,65 @@ contract COCTRewards is ReentrancyGuard, Ownable {
     }
 
     /* ============================== CLAIMS ============================= */
-    /// @notice Claim accrued Daily Passive (your own mirrors). A rank-based COC Stability Contribution fee
-    ///         is deducted and sent to stabilityWallet; the net is credited to your vault balance. Draws
-    ///         your income cap by the gross. Pays only up to the reward pool.
+    /// @notice Realize accrued Daily Passive (your own mirrors) into your `rewardsBalance` ledger. NO fee is
+    ///         taken here — the stability fee applies once at `withdrawRewards`. Draws your income cap by the
+    ///         accrued amount. Cap-bounded only (no pool check; funds move at withdrawal).
     function claimDailyPassive() external nonReentrant whenNotPaused {
         address u = msg.sender;
         require(accounts.isUser(u), "NOT_REGISTERED");
         uint256 cap = incomeCap[u];
         require(cap > 0, "INACTIVE");
-        uint256 poolBal = assets.balanceOf(liquidityWallet, USDT);
-        uint256 budget = cap < poolBal ? cap : poolBal;
-        require(budget > 0, "POOL_EMPTY");
-        uint256 gross = _accrue(passive[u], budget);
+        uint256 gross = _accrue(passive[u], cap);
         require(gross > 0, "NOTHING");
         incomeCap[u] = cap - gross;
-        uint256 fee = (gross * _stabilityBpsOf(u)) / BPS;
-        uint256 net = gross - fee;
-        if (net > 0) assets.balanceTransfer(liquidityWallet, u, USDT, net);
-        if (fee > 0) assets.balanceTransfer(liquidityWallet, stabilityWallet, USDT, fee);
+        rewardsBalance[u] += gross;
         dailyPassiveTotal[u] += gross;
-        emit DailyPassiveClaimed(u, gross, fee, net);
+        emit DailyPassiveClaimed(u, gross);
     }
 
-    /// @notice Claim accrued Direct Passive (referral-L1 mirrors). Draws your income cap; no stability fee.
+    /// @notice Realize accrued Direct Passive (referral-L1 mirrors) into your `rewardsBalance` ledger.
     function claimDirectPassive() external nonReentrant whenNotPaused {
         uint256 paid = _claimMirror(directPassive[msg.sender]);
         directPassiveTotal[msg.sender] += paid;
         emit DirectPassiveClaimed(msg.sender, paid);
     }
 
-    /// @notice Claim accrued Line Income (line-tree mirrors). Draws your income cap; no stability fee.
+    /// @notice Realize accrued Line Income (line-tree mirrors) into your `rewardsBalance` ledger.
     function claimLineIncome() external nonReentrant whenNotPaused {
         uint256 paid = _claimMirror(lineIncome[msg.sender]);
         lineIncomeTotal[msg.sender] += paid;
         emit LineIncomeClaimed(msg.sender, paid);
+    }
+
+    /// @notice Withdraw your accrued `rewardsBalance` to your vault: the `_stabilityBpsOf` fee is deducted
+    ///         (routed to the LP), and the net is credited to your COCTAssets vault balance (then withdrawable
+    ///         via assets.withdraw). Pays only up to the reward pool (liquidityWallet vault balance); any
+    ///         un-paid remainder stays in `rewardsBalance` for a later withdrawal.
+    /// @dev nonReentrant + whenNotPaused. Reverts NOT_REGISTERED / NOTHING / POOL_EMPTY. The fee is moved out
+    ///      of the pool and routed via `_routeLiquidity` when the LP is live; otherwise it stays in the pool.
+    function withdrawRewards() external nonReentrant whenNotPaused {
+        address u = msg.sender;
+        require(accounts.isUser(u), "NOT_REGISTERED");
+        uint256 gross = rewardsBalance[u];
+        require(gross > 0, "NOTHING");
+
+        // Clamp to the reward pool; the un-paid remainder stays accrued for later.
+        uint256 poolBal = assets.balanceOf(liquidityWallet, USDT);
+        uint256 pay = gross < poolBal ? gross : poolBal;
+        require(pay > 0, "POOL_EMPTY");
+        rewardsBalance[u] = gross - pay;
+
+        uint256 fee = (pay * _stabilityBpsOf(u)) / BPS;
+        uint256 net = pay - fee;
+
+        // Net → the member's vault balance (pool → user). Order net-first keeps the pool >= fee.
+        if (net > 0) assets.balanceTransfer(liquidityWallet, u, USDT, net);
+        // Fee → LP when the position is live; otherwise it simply remains in the pool.
+        if (fee > 0 && _managerReady(liquidity)) {
+            assets.debitBalance(liquidityWallet, USDT, fee); // pool balance → vault surplus
+            _routeLiquidity(fee);                            // surplus → LP (best-effort; re-pools on failure)
+        }
+        emit RewardsWithdrawn(u, pay, fee, net);
     }
 
     /// @notice Redeem your accrued product entitlement (`tokenBalance`, USDT-value) as COCT. PREFERRED path:
@@ -573,19 +603,17 @@ contract COCTRewards is ReentrancyGuard, Ownable {
         return delivered;
     }
 
-    /// @dev Shared no-fee mirror claim (direct passive / line income). Pays min(cap, pool) to the caller.
+    /// @dev Shared mirror realization (direct passive / line income). Accrues up to the remaining income cap
+    ///      into the caller's `rewardsBalance` ledger (no funds move until withdrawRewards).
     function _claimMirror(PassiveData[] storage arr) internal returns (uint256 paid) {
         address u = msg.sender;
         require(accounts.isUser(u), "NOT_REGISTERED");
         uint256 cap = incomeCap[u];
         require(cap > 0, "INACTIVE");
-        uint256 poolBal = assets.balanceOf(liquidityWallet, USDT);
-        uint256 budget = cap < poolBal ? cap : poolBal;
-        require(budget > 0, "POOL_EMPTY");
-        paid = _accrue(arr, budget);
+        paid = _accrue(arr, cap);
         require(paid > 0, "NOTHING");
         incomeCap[u] = cap - paid;
-        assets.balanceTransfer(liquidityWallet, u, USDT, paid);
+        rewardsBalance[u] += paid;
     }
 
     /// @dev Accrue mirror tranches up to `budget`, mutating each tranche's totalClaimed. Startime-based:
@@ -628,9 +656,10 @@ contract COCTRewards is ReentrancyGuard, Ownable {
     struct UserView {
         bool registered;
         bool activated;
-        uint8 rank;          // 0..5 (valid when activated)
-        uint256 incomeCap;   // remaining
+        uint8 rank;            // 0..5 (valid when activated)
+        uint256 incomeCap;     // remaining
         uint256 tokenBalance;
+        uint256 rewardsBalance; // accrued, withdrawable via withdrawRewards (fee applied then)
         uint256 pendingDaily;
         uint256 pendingDirect;
         uint256 pendingLine;
@@ -643,6 +672,7 @@ contract COCTRewards is ReentrancyGuard, Ownable {
         v.rank = v.activated ? rankPlus1[u] - 1 : 0;
         v.incomeCap = incomeCap[u];
         v.tokenBalance = tokenBalance[u];
+        v.rewardsBalance = rewardsBalance[u];
         v.pendingDaily = _pendingView(passive[u]);
         v.pendingDirect = _pendingView(directPassive[u]);
         v.pendingLine = _pendingView(lineIncome[u]);
@@ -701,15 +731,15 @@ contract COCTRewards is ReentrancyGuard, Ownable {
     }
 
     /* ============================== ADMIN ============================= */
-    /// @notice Set the five wallets (all non-zero). liquidityWallet is the reward pool.
-    function setWallets(address admin_, address marketing_, address leaders_, address liquidity_, address stability_) external onlyAuth {
-        require(admin_ != address(0) && marketing_ != address(0) && leaders_ != address(0) && liquidity_ != address(0) && stability_ != address(0), "ZERO_WALLET");
+    /// @notice Set the four wallets (all non-zero). liquidityWallet is the reward pool. The stability fee is
+    ///         routed to the LP (not a wallet), so there is no stability wallet.
+    function setWallets(address admin_, address marketing_, address leaders_, address liquidity_) external onlyAuth {
+        require(admin_ != address(0) && marketing_ != address(0) && leaders_ != address(0) && liquidity_ != address(0), "ZERO_WALLET");
         adminWallet = admin_;
         marketingWallet = marketing_;
         leadersWallet = leaders_;
         liquidityWallet = liquidity_;
-        stabilityWallet = stability_;
-        emit WalletsSet(admin_, marketing_, leaders_, liquidity_, stability_);
+        emit WalletsSet(admin_, marketing_, leaders_, liquidity_);
     }
 
     /// @notice Set the deposit split (admin+marketing+leaders+tokenLiquidity must sum to 100%; lp ≤ tokenLiquidity).

@@ -39,13 +39,6 @@ export default function Account() {
     chainId,
     query: { enabled: !!address && !!c },
   });
-  const { data: rootAddr } = useReadContract({
-    address: c?.accounts,
-    abi: accountsAbi,
-    functionName: "root",
-    chainId,
-    query: { enabled: !!c },
-  });
   const { data: info, refetch: refetchInfo } = useReadContracts({
     contracts:
       address && c && isUser === true
@@ -84,20 +77,20 @@ export default function Account() {
     query: { enabled: !!txHash },
   });
 
-  // Auto-fill the sponsor field: prefer a sponsor captured from an affiliate link (localStorage), else the
-  // company root. A self-referral (stored sponsor == your own wallet) is invalid — ignore & clear it.
+  // Auto-fill the sponsor field ONLY from a valid, non-expired affiliate-link sponsor (localStorage).
+  // If none is set (or it expired), the field stays EMPTY — no company-root fallback. A self-referral
+  // (stored sponsor == your own wallet) is invalid, so it's ignored and cleared.
   useEffect(() => {
     if (sponsor) return;
-    const stored = getStoredSponsor();
-    if (stored && address && stored.toLowerCase() === address.toLowerCase()) {
-      clearStoredSponsor(); // can't sponsor yourself
-    } else if (stored) {
-      setSponsor(stored);
-      setFromReferral(true);
+    const stored = getStoredSponsor(); // "" when not-set or expired (and clears expired records)
+    if (!stored) return; // leave the field empty
+    if (address && stored.toLowerCase() === address.toLowerCase()) {
+      clearStoredSponsor(); // can't sponsor yourself → keep the field empty
       return;
     }
-    if (rootAddr) setSponsor(rootAddr);
-  }, [rootAddr, address]); // eslint-disable-line react-hooks/exhaustive-deps
+    setSponsor(stored);
+    setFromReferral(true);
+  }, [address]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // If the connected wallet is already registered, the stored sponsor is moot — delete it.
   useEffect(() => {
@@ -198,7 +191,7 @@ export default function Account() {
         chainId,
       });
       await waitForTransactionReceipt(wagmiConfig, { hash: dh, chainId });
-      setTxMsg({ type: "success", text: `Deposited ${depAmt} USDT to your vault.` });
+      setTxMsg({ type: "success", text: `Deposited ${depAmt} USDT to your Funding Wallet.` });
       setDepAmt("");
       refetchInfo?.();
     } catch (e) {
@@ -221,7 +214,7 @@ export default function Account() {
         chainId,
       });
       await waitForTransactionReceipt(wagmiConfig, { hash: h, chainId });
-      setTxMsg({ type: "success", text: `Withdrew $${denom} USDT (5% fee applied).` });
+      setTxMsg({ type: "success", text: `Withdrew $${denom} USDT to your wallet.` });
       refetchInfo?.();
     } catch (e) {
       setTxMsg({ type: "error", text: prettyErr(e) });
@@ -370,7 +363,7 @@ export default function Account() {
                       balance={fmt(usdtVault)}
                       currency="USDT"
                       badge={rankName}
-                      label="Vault Balance"
+                      label="Funding Wallet"
                       cardId={addrToCardId(address)}
                     />
 
@@ -428,6 +421,10 @@ export default function Account() {
 
                     <div className="cw-tokens">
                       <div className="cw-eyebrow">Income</div>
+                      <p className="cw-modal-sub" style={{ opacity: 0.7, margin: "0 2px 8px" }}>
+                        Passive streams accrue over time — Claim to move the pending amount into your Rewards
+                        Wallet. Direct Referral &amp; Override are credited to it automatically (no claim).
+                      </p>
                       <div className="cw-token card-box">
                         <span className="cw-token-sym">Daily passive</span>
                         <span className="cw-token-right">
@@ -463,11 +460,17 @@ export default function Account() {
                       </div>
                       <div className="cw-token card-box">
                         <span className="cw-token-sym">Direct referral</span>
-                        <span className="cw-token-amt">{fmt(directReferralEarned)} USDT</span>
+                        <span className="cw-token-right">
+                          <span className="cw-token-amt">{fmt(directReferralEarned)} USDT</span>
+                          <span className="cw-auto-tag">Auto ✓</span>
+                        </span>
                       </div>
                       <div className="cw-token card-box">
                         <span className="cw-token-sym">Override income</span>
-                        <span className="cw-token-amt">{fmt(overrideEarned)} USDT</span>
+                        <span className="cw-token-right">
+                          <span className="cw-token-amt">{fmt(overrideEarned)} USDT</span>
+                          <span className="cw-auto-tag">Auto ✓</span>
+                        </span>
                       </div>
                       {claimMsg && (
                         <p
@@ -483,7 +486,32 @@ export default function Account() {
                     </div>
 
                     <div className="cw-tokens">
-                      <div className="cw-eyebrow">Vault balance</div>
+                      <div className="cw-eyebrow">Rewards Wallet</div>
+                      <div className="cw-token card-box">
+                        <span className="cw-token-sym">Available to transfer</span>
+                        <span className="cw-token-right">
+                          <span className="cw-token-amt">{fmt(rw?.rewardsBalance)} USDT</span>
+                          <button
+                            type="button"
+                            className="cw-claim"
+                            disabled={!(rw?.rewardsBalance > 0n) || !!claiming}
+                            onClick={() =>
+                              doClaim("withdrawRewards", "rewards to your Funding Wallet (stability fee applied)")
+                            }
+                          >
+                            {claiming === "withdrawRewards" ? "Transferring…" : "Transfer to Funding Wallet"}
+                          </button>
+                        </span>
+                      </div>
+                      <p className="cw-modal-sub" style={{ opacity: 0.7, margin: "4px 2px 0" }}>
+                        Claim the income above to add it to your Rewards Wallet, then transfer it to your Funding
+                        Wallet — a rank-based stability fee is deducted and added to liquidity. From the Funding
+                        Wallet you can withdraw to your external wallet.
+                      </p>
+                    </div>
+
+                    <div className="cw-tokens">
+                      <div className="cw-eyebrow">Funding Wallet</div>
                       <div className="cw-token card-box">
                         <span className="cw-token-sym">USDT</span>
                         <span className="cw-token-amt">{fmt(usdtVault)}</span>
@@ -519,7 +547,7 @@ export default function Account() {
           </div>
           <div className="cw-modal-body">
             <p className="cw-modal-sub">
-              Vault: {fmt(usdtVault)} USDT · Wallet: {fmt(walletUsdt)} USDT
+              Funding Wallet: {fmt(usdtVault)} USDT · External wallet: {fmt(walletUsdt)} USDT
             </p>
 
             {sheet === "deposit" ? (
@@ -571,13 +599,13 @@ export default function Account() {
                   onClick={doDeposit}
                   disabled={txBusy || !depOk}
                 >
-                  {txBusy ? "Depositing…" : "Deposit to vault"}
+                  {txBusy ? "Depositing…" : "Deposit to Funding Wallet"}
                 </button>
               </>
             ) : (
               <>
                 <p className="cw-modal-sub">
-                  Pick a denomination — a 5% fee + 24h cooldown apply (COCTAssets):
+                  Pick a denomination — no vault fee; a 24h cooldown applies (COCTAssets):
                 </p>
                 <div className="cw-actions" style={{ flexWrap: "wrap" }}>
                   {[20, 50, 100].map((d) => (

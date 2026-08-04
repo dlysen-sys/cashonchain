@@ -56,7 +56,7 @@ contract COCTAssetsTest is Test {
         acc.setAdmin(admin, true);
         acc.setUser(alice, true);
         acc.setUser(attacker, true);
-        vault = new COCTAssets(address(acc), address(0));
+        vault = new COCTAssets(address(acc));
         tok = new MockERC20();
     }
 
@@ -187,9 +187,9 @@ contract COCTAssetsTest is Test {
     // (g) constructor rejects a zero address and a non-contract (EOA)
     function test_constructor_rejects_bad_accounts() public {
         vm.expectRevert(bytes("ZERO_ACCOUNTS"));
-        new COCTAssets(address(0), address(0));
+        new COCTAssets(address(0));
 
         vm.expectRevert(bytes("NOT_CONTRACT"));
-        new COCTAssets(address(0xE0A), address(0)); // EOA — no code
+        new COCTAssets(address(0xE0A)); // EOA — no code
     }
 }

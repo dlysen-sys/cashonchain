@@ -280,6 +280,20 @@
   border-color: rgba(255, 255, 255, 0.14);
   opacity: 0.5;
 }
+/* non-interactive "auto-credited" tag, sized like the claim pill so rows stay aligned */
+.coc-wallet .cw-auto-tag {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+  opacity: 0.55;
+}
 .coc-wallet .cw-err {
   color: #e0655f;
   font-size: 12px;
