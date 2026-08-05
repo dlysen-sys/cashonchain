@@ -648,3 +648,116 @@
     animation: none;
   }
 }
+
+/* ── StaticHeader "CASH ON CHAIN" brand label ──
+   Hidden on desktop; on mobile (≤1023px, where .header is a full-width 58px top
+   bar) it overlays that bar and centers both axes. pointer-events:none so it
+   never blocks the logo (left) or the hamburger menu-btn (right). */
+.header .social .header-brand {
+  display: none;
+}
+@media (max-width: 1023px) {
+  .header .social .header-brand {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 58px;
+    margin: 0;
+    pointer-events: none;
+    color: #fff;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+}
+
+/* ── Subscribe → Income Calculator (projection) ── */
+.coc-wallet .coc-calc {
+  margin-top: 18px;
+}
+.coc-wallet .coc-calc__intro {
+  margin: 6px 0 14px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  opacity: 0.7;
+}
+.coc-wallet .coc-calc__intro sup {
+  font-size: 9px;
+}
+.coc-wallet .coc-calc__inputs {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+}
+@media (max-width: 560px) {
+  .coc-wallet .coc-calc__inputs {
+    grid-template-columns: 1fr;
+  }
+}
+.coc-wallet .coc-calc__inputs .cw-field {
+  margin: 0;
+}
+.coc-wallet .coc-calc__summary {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 16px 0 6px;
+}
+@media (max-width: 560px) {
+  .coc-wallet .coc-calc__summary {
+    grid-template-columns: 1fr;
+  }
+}
+.coc-wallet .coc-calc__stat {
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  text-align: center;
+}
+.coc-wallet .coc-calc__stat .cw-total-value {
+  font-family: "Orbitron", ui-monospace, monospace;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: var(--cw-accent);
+}
+.coc-wallet .coc-calc__stat small {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  opacity: 0.55;
+}
+.coc-wallet .coc-calc__grouphead {
+  margin: 14px 0 6px;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  opacity: 0.5;
+}
+.coc-wallet .coc-calc__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 13px;
+}
+.coc-wallet .coc-calc__row span {
+  opacity: 0.8;
+}
+.coc-wallet .coc-calc__row strong {
+  font-family: "Orbitron", ui-monospace, monospace;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.coc-wallet .coc-calc__note {
+  margin-top: 14px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  opacity: 0.6;
+}

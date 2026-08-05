@@ -21,7 +21,7 @@ export const site = {
   nav: [
     { id: "home", label: "Home", icon: "la la-home" },
     { id: "account", label: "Account", icon: "la la-user" },
-    { id: "subscribe", label: "subscribe", icon: "la la-shopping-cart" },
+    { id: "subscribe", label: "subscribe", icon: "la la-bell" },
     { id: "wallet", label: "wallet", icon: "la la-credit-card" },
     { id: "tree", label: "tree", icon: "la la-sitemap" },
   ],

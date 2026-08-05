@@ -7,6 +7,7 @@ import { wagmiConfig, TOKENS } from "../lib/appkit.js";
 import { amt } from "../lib/format.js";
 import { contractsFor } from "../config/contracts.js";
 import { accountsAbi, rewardsAbi, assetsAbi } from "../config/abis.js";
+import IncomeCalculator from "./IncomeCalculator.jsx";
 
 const USDT = TOKENS.find((t) => t.symbol === "USDT").address;
 
@@ -262,6 +263,8 @@ export default function Subscribe() {
                     )}
                   </>
                 )}
+
+                <IncomeCalculator />
               </div>
             </div>
           </div>

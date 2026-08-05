@@ -5,11 +5,11 @@ import { site } from "../data/site.js";
 // Non-tab header for standalone routes (blog, wallet, …). Each nav id maps to a route (/${id});
 // the item matching the current URL gets the active/selected classes so its icon takes the accent.
 export default function StaticHeader() {
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(true); // open by default; stays open until the user taps the X
   const { pathname } = useLocation();
   return (
     <ul className={`header${menuOpen ? " opened" : ""}`}>
-      <div className="logo">
+      <div className="logo" hidden>
         <Link to="/home">
           {site.logo ? (
             <img className="brand-logo" src={site.logo} alt={`${site.name.first}${site.name.last}`} />
@@ -37,12 +37,16 @@ export default function StaticHeader() {
         </ul>
       </div>
       <div className="social">
+        <div hidden>
         {site.social.map((s, i) => (
-          <a key={i} target="_blank" rel="noreferrer" href={s.href}>
+          <a key={i} target="_blank" rel="noreferrer" href={s.href} >
             <span className={`icon ${s.icon}`}></span>
           </a>
         ))}
+        </div>
+        <span className="header-brand">CASH ON CHAIN</span>
       </div>
+      
       <span
         className="menu-btn"
         onClick={() => setMenuOpen((o) => !o)}

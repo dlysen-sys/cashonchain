@@ -60,23 +60,27 @@ export default function Home() {
             }}
           >
             <span
+              className="coc-usercount"
               style={{
-                fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-                fontSize: 38,
-                fontWeight: 700,
+                fontFamily: "'Orbitron', ui-monospace, SFMono-Regular, Menlo, monospace",
+                fontSize: 44,
+                fontWeight: 800,
                 letterSpacing: "0.14em",
                 lineHeight: 1,
+                fontVariantNumeric: "tabular-nums",
               }}
             >
               {userCount}
             </span>
             <span
               style={{
-                fontSize: 12,
-                letterSpacing: "0.5em",
+                fontSize: 32,
+                fontWeight: 700,
+                letterSpacing: "0.8em",
                 paddingLeft: "0.5em",
                 textTransform: "uppercase",
-                opacity: 0.65,
+                color: "#ffffff",
+                opacity: 1,
               }}
             >
               Users

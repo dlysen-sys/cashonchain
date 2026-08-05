@@ -15,11 +15,11 @@ const PANELS = [Home, About, Subscribe, Portfolio, BlogTab, Wallet, Tree];
 
 export default function HomeLayout() {
   // Mobile nav open/close — original adds `.opened` to the header on burger tap.
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(true); // open by default; stays open until the user taps the X
 
   return (
     <div className="page">
-      <Tabs onSelect={() => setMenuOpen(false)}>
+      <Tabs>
         {/* The header IS the react-tabs TabList (deep-nested Tabs, like the original) */}
         <TabList className={`header${menuOpen ? " opened" : ""}`}>
           <div className="logo">
@@ -45,7 +45,7 @@ export default function HomeLayout() {
             </ul>
           </div>
 
-          <div className="social">
+          <div className="social" hidden>
             {site.social.map((s, i) => (
               <a key={i} target="_blank" rel="noreferrer" href={s.href}>
                 <span className={`icon ${s.icon}`}></span>
