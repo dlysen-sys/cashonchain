@@ -1,16 +1,26 @@
 # Cash On Chain (COC) — Milestones
 
-**Project Status:** 🟡 Phase 1 — kickoff (not yet published)
-**Last Updated:** 2026-08-03
-**Next Session Focus:** Define the COC on-chain product (contracts/token/flows), then start the page-by-page rebuild
-**Session Status:** OPEN 2026-08-03 — kickoff + scaffold
+**Project Status:** 🟢 ~98% — LIVE on BSC mainnet + cashonchain.network
+**Last Updated:** 2026-08-06
+**Next Session Focus:** Warm the LP TWAP (or seed COCT reserve + setProductRate) to finish `claimToken`; operational hardening (distinct wallets, demote old rewards, owner→multisig)
+**Session Status:** CLOSED 2026-08-06 — income calculator + UI polish + TWAP fix + publish
 
 ---
 
+## Current State (2026-08-06)
+- **LIVE:** COCT peripheral contracts on BSC mainnet + frontend at **cashonchain.network** (gh-pages,
+  repo `dlysen-sys/cashonchain`). dApp functional — rewards is an accounts admin.
+- Full comp plan wired (register/deposit/activate, 5 reward streams, agent rewards, tree, withdraw) on the
+  real-balance vault model. Subscribe now includes an **income projection calculator**.
+- **Residual (~2%):** `claimToken` swap path pending LP **TWAP warm-up** (ran `growObservationCardinality(100)`;
+  needs swaps + ~10 min) or interim seed-reserve + `setProductRate`. Operational: 4 distinct split wallets
+  (currently owner EOA), demote old rewards `0x83Cd…` from accounts admin, owner → multisig. Source commit
+  `d3474f3` local-only (site already published).
+
 ## Phase Breakdown
 
-### 🟡 Phase 1: Kickoff + scaffold
-**Status:** IN PROGRESS
+### ✅ Phase 1: Kickoff + scaffold
+**Status:** COMPLETE
 - [x] Scaffolded `projects/coc` (React 18 + Vite + theme system)
 - [x] Wired build/deploy identity to COC / cashonchain.network
       (`package.json` name+homepage+deploy cname, `vite.config.js`, `index.html`, `manifest.json`, `app/README.md`)
@@ -20,14 +30,14 @@
 - [x] Kickoff logged in `decisions/log.md`
 - [ ] **Define the COC product** — contracts, token, user flows (owner input needed)
 
-### ⏳ Phase 2: Content + page rebuild
-**Status:** NOT STARTED
+### ✅ Phase 2: Content + page rebuild
+**Status:** COMPLETE — COC content live (dashboard, account, subscribe, wallet, tree, income calculator)
 - [ ] Rebuild placeholder pages/sections with COC content; archive each original as it's replaced
 - [ ] `site.js` — COC brand, nav, social, hero
 - [ ] Clean up starter assets/docs (`docs/`, placeholder media)
 
-### ⏳ Phase 3: Web3 integration
-**Status:** STARTED — contracts rebranded ORBIX → COCT (2026-08-03)
+### ✅ Phase 3: Web3 integration
+**Status:** COMPLETE — contracts on BSC mainnet, wagmi/AppKit wired, dApp functional (residual: claimToken TWAP warm-up)
 - [x] COCT contract set in `contracts/` (token + accounts/assets/staking/liquidity/membership + tests); COCT token address wired (`0x13c6f832…A77`)
 - [x] `accounts.sol` global one-line + `moveLine`; `rewards.sol` (`COCTRewards`) compensation-plan hub built per `docs/REWARDS.md`; `assets.sol` withdrawal denominations {20,50,100}
 - [x] Mirrored to `chain/src/coc/`; Foundry tests `chain/test/coc/COCTRewards.t.sol` (10/10 pass); deployed + smoke-tested on local anvil (`chain/script/coc/Deploy.s.sol` + `deploy-local.sh`)
@@ -36,8 +46,8 @@
 - [ ] Mirror to `chain/src/coc/` + Foundry tests; deploy to NAS anvil (dev)
 - [ ] Wire dashboard/actions per `references/sops/smart-contract-integration.md`
 
-### ⏳ Phase 4: Ship (gated)
-**Status:** BLOCKED — needs dedicated repo + updated classic PAT
+### ✅ Phase 4: Ship
+**Status:** COMPLETE — repo `dlysen-sys/cashonchain`, gh-pages live at cashonchain.network + HTTPS
 - [ ] Create `dlysen` repo (suggested `dlysen/cashonchain`); PAT in `.env.local`
 - [ ] `gh-pages` deploy + cPanel `dist.zip` backup
 - [ ] Custom domain `cashonchain.network` + HTTPS
@@ -88,16 +98,13 @@
 
 ---
 
-## Next Session Checklist
-- [ ] Compile the COCT contracts (mirror to `chain/src/coc/` + `forge build`); confirm `coctoken.sol` byte-matches the BscScan-verified deployed source; run a security review before deploying the peripheral contracts.
-- [ ] Define the COC on-chain product with the owner (contracts, token, user flows)
-- [ ] Decide the first page(s) to rebuild; archive the originals as they're replaced
-- [ ] Set COC brand/nav/social in `site.js`
-- [ ] Stand up `chain/src/coc/` when contract work begins
-- [ ] Create the `dlysen` repo + paste updated classic PAT into `.env.local` (unblocks publish)
+## Next Session Checklist (residual ~2%)
+- [ ] Finish `claimToken`: warm the LP TWAP (a few swaps + ~10 min after `growObservationCardinality(100)`), OR seed the COCT reserve + `setProductRate` (~$0.16 → `6.135e18`); then retry `claimToken`.
+- [ ] Push source commit `d3474f3` to `origin/main` if desired (gh-pages site already updated).
+- [ ] Operational hardening: set 4 distinct split wallets (currently all owner EOA), demote old rewards `0x83Cd…` from accounts admin, migrate owner → multisig.
 
 ---
 
-**Last Session:** 2026-08-03
+**Last Session:** 2026-08-06
 **Project Owner:** Dangal Macatangay
-**Status:** ✅ On Track
+**Status:** ✅ 98% — LIVE, residual operational items only
