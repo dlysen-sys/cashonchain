@@ -23,7 +23,13 @@ export default function HomeLayout() {
         {/* The header IS the react-tabs TabList (deep-nested Tabs, like the original) */}
         <TabList className={`header${menuOpen ? " opened" : ""}`}>
           <div className="logo">
-            <a href="/"><span>{site.brand}</span></a>
+            <a href="/">
+              {site.logo ? (
+                <img className="brand-logo" src={site.logo} alt={`${site.name.first}${site.name.last}`} />
+              ) : (
+                <span>{site.brand}</span>
+              )}
+            </a>
           </div>
 
           <div className="top-menu">

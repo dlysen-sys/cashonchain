@@ -10,6 +10,13 @@ export default function Home() {
       <HeroBackground mode={bg} />
       <div className="centrize full-width">
         <div className="vertical-center">
+          {site.logo && (
+            <img
+              className="coc-hero-logo"
+              src={site.logo}
+              alt={`${site.name.first}${site.name.last}`}
+            />
+          )}
           <div className="title">
             <span>{site.name.first}</span>{site.name.last}
           </div>

@@ -94,10 +94,13 @@ contract COCTAssets is ReentrancyGuard {
     /* ------------------------------ Balances --------------------------- */
     /// @notice Vault balance per user, per token: balances[user][token].
     mapping(address => mapping(address => uint256)) public balances;
-    /// @notice Per-token sum of all attributed internal balances (the vault's liabilities). Kept in sync
-    ///         with every `balances` mutation. Solvency invariant: totalTracked[token] <= real holdings,
-    ///         so no ledger balance can ever be created that the vault does not physically back.
-    mapping(address => uint256) public totalTracked;
+    /// @notice Per-token sum of all attributed internal balances = the TOTAL OWED / total available for
+    ///         withdrawal. Kept in sync with every `balances` mutation. This is a HEALTH METRIC, not an
+    ///         enforced invariant: reward credits are inflow-funded, so `totalWithdrawable[token]` MAY exceed
+    ///         real holdings. Solvency = real balance is the source of truth; compare `totalWithdrawable`
+    ///         against `vaultBalance` (see `shortfall`). Withdrawals succeed only while the real balance
+    ///         covers them; `onlyAuth` is trusted to modify balances (admin must be a multisig / audited hub).
+    mapping(address => uint256) public totalWithdrawable;
 
     /* ------------------------- Withdrawal limits ----------------------- */
     /// @notice Basis-points denominator (10000 = 100%) for the withdrawal fee.
@@ -175,6 +178,12 @@ contract COCTAssets is ReentrancyGuard {
     event WithdrawalDenominationsSet(uint256[] denominations);
 
     /* ------------------------------ Modifiers -------------------------- */
+    /// @dev Restricts a function to the accounts OWNER (the single highest authority). Reverts NOT_OWNER.
+    modifier onlyOwner() {
+        require(msg.sender == accounts.owner(), "NOT_OWNER");
+        _;
+    }
+
     /// @dev Restricts a function to anyone with admin authority in the accounts (its owner or an explicit
     ///      admin) — the accounts is the single source of truth for authorization. The membership + staking
     ///      hubs are registered via accounts.addAdmin, so they pass here. Reverts NOT_AUTH.
@@ -224,9 +233,43 @@ contract COCTAssets is ReentrancyGuard {
         uint256 received = IERC20(tokenAddress).balanceOf(address(this)) - balBefore;
         require(received > 0, "NOTHING_RECEIVED");
 
-        balances[msg.sender][tokenAddress] += received;
-        totalTracked[tokenAddress] += received;
-        emit Deposited(msg.sender, tokenAddress, received);
+        _creditDeposit(msg.sender, tokenAddress, received);
+    }
+
+    /// @notice Pull `amount` of `tokenAddress` from `user` and credit it to `user`'s own vault balance.
+    ///         Auth-gated primitive so a hub (e.g. rewards.register) can take a member's entry and fund their
+    ///         Funding Wallet atomically — `user` approves THIS vault, then the hub calls this. Same
+    ///         received-delta accounting as `deposit` (fee-on-transfer safe).
+    /// @param user The member charged AND credited (must be registered; must have approved this vault).
+    /// @param tokenAddress The BEP20 token to pull.
+    /// @param amount The amount to pull from `user`.
+    /// @dev onlyAuth, nonReentrant, whenNotPaused. Reverts NOT_REGISTERED / ZERO_AMOUNT / NOTHING_RECEIVED.
+    function depositFor(address user, address tokenAddress, uint256 amount)
+        external onlyAuth nonReentrant whenNotPaused
+    {
+        require(accounts.isUser(user), "NOT_REGISTERED");
+        require(amount > 0, "ZERO_AMOUNT");
+
+        uint256 balBefore = IERC20(tokenAddress).balanceOf(address(this));
+        _safeTransferFrom(tokenAddress, user, address(this), amount);
+        uint256 received = IERC20(tokenAddress).balanceOf(address(this)) - balBefore;
+        require(received > 0, "NOTHING_RECEIVED");
+
+        _creditDeposit(user, tokenAddress, received);
+    }
+
+    /// @dev Credit a just-received deposit to `user` in full — a deposit is fully backed (real tokens came in),
+    ///      so `balances` and `totalWithdrawable` both rise with holdings. NOTE: the vault as a whole does NOT
+    ///      enforce `totalWithdrawable <= holdings` (reward credits are inflow-funded and may over-commit);
+    ///      solvency is monitored via `shortfall` and enforced at withdraw by the real-balance gate. Marketing is
+    ///      NOT skimmed here — it is funded later, at activation, by `rewards._splitDeposit`.
+    ///      Every deposit starts a FRESH withdrawal cooldown for the account (deposit → wait `withdrawal_cooldown`,
+    ///      default 24h, before withdrawing) — blocks deposit-then-instant-withdraw cycling.
+    function _creditDeposit(address user, address tokenAddress, uint256 received) internal {
+        balances[user][tokenAddress] += received;
+        totalWithdrawable[tokenAddress] += received;
+        coolDown[user] = block.timestamp + withdrawal_cooldown; // refresh the withdrawal cooldown on every deposit
+        emit Deposited(user, tokenAddress, received);
     }
 
     /* ============================ USER — WITHDRAW ======================= */
@@ -248,10 +291,10 @@ contract COCTAssets is ReentrancyGuard {
     /// @param user The member to credit.
     /// @param tokenAddress The token to credit.
     /// @param amount The amount to add.
-    /// @dev onlyAuth, nonReentrant, whenNotPaused. Increases a balance with NO token inflow, so the reward
-    ///      pool must be pre-funded: reverts UNBACKED unless the vault physically holds enough surplus to
-    ///      back the new credit (totalTracked[token] + amount <= real holdings). This enforces the solvency
-    ///      invariant — the credited-and-withdrawn "mint from nothing" drain can no longer exceed holdings.
+    /// @dev onlyAuth, nonReentrant, whenNotPaused. Increases a balance with NO token inflow — an inflow-funded
+    ///      reward credit. No backing guard: `totalWithdrawable` may exceed real holdings (the contract can owe
+    ///      more than it currently holds). The withdraw path is real-balance-gated, so an over-credited balance
+    ///      simply can't be paid until the contract is funded. `onlyAuth` is the trust boundary here.
     function creditBalance(
         address user,
         address tokenAddress,
@@ -259,11 +302,7 @@ contract COCTAssets is ReentrancyGuard {
     ) external onlyAuth nonReentrant whenNotPaused {
         require(user != address(0), "ZERO_USER");
         require(amount > 0, "ZERO_AMOUNT");
-        require(
-            totalTracked[tokenAddress] + amount <= IERC20(tokenAddress).balanceOf(address(this)),
-            "UNBACKED"
-        );
-        totalTracked[tokenAddress] += amount;
+        totalWithdrawable[tokenAddress] += amount;
         balances[user][tokenAddress] += amount;
         emit BalanceCredited(user, tokenAddress, amount);
     }
@@ -275,12 +314,12 @@ contract COCTAssets is ReentrancyGuard {
     /// @param amount The amount to remove.
     /// @dev onlyAuth. The deducted tokens STAY in the vault (now unattributed) — they become pool /
     ///      company funds. Reverts INSUFFICIENT_BALANCE if the member's balance is too low.
-    function debitBalance(address user, address tokenAddress, uint256 amount) external onlyAuth whenNotPaused {
+    function debitBalance(address user, address tokenAddress, uint256 amount) external onlyAuth nonReentrant whenNotPaused {
         require(amount > 0, "ZERO_AMOUNT");
         uint256 bal = balances[user][tokenAddress];
         require(bal >= amount, "INSUFFICIENT_BALANCE");
         balances[user][tokenAddress] = bal - amount;
-        totalTracked[tokenAddress] -= amount;
+        totalWithdrawable[tokenAddress] -= amount;
         emit BalanceDebited(user, tokenAddress, amount);
     }
 
@@ -297,7 +336,7 @@ contract COCTAssets is ReentrancyGuard {
         address to,
         address tokenAddress,
         uint256 amount
-    ) external onlyAuth whenNotPaused {
+    ) external onlyAuth nonReentrant whenNotPaused {
         require(to != address(0), "ZERO_TO");
         require(amount > 0, "ZERO_AMOUNT");
         uint256 bal = balances[from][tokenAddress];
@@ -325,23 +364,19 @@ contract COCTAssets is ReentrancyGuard {
         emit BalanceWithdrawn(tokenAddress, to, amount);
     }
 
-    /// @notice Move UNATTRIBUTED surplus (`holdings - totalTracked`) out of the vault to `to`. Used to fund
-    ///         external operations — e.g. the membership hub seeding the PancakeSwap LP from the Liquidity
-    ///         allocation. Not subject to the per-user withdrawal fee/denomination/cooldown.
+    /// @notice Move real tokens out of the vault to `to` (opex payout, LP funding, agent/product claims).
+    ///         `totalWithdrawable` is untouched — the caller (rewards) debits the relevant balance first when
+    ///         the payout is drawn from a pool. Not subject to the per-user withdrawal fee/denomination/cooldown.
     /// @param tokenAddress The BEP20 token to send out.
-    /// @param to The recipient (e.g. the membership hub, which forwards it to the LP manager).
-    /// @param amount The amount to send — must not exceed the current surplus.
-    /// @dev onlyAuth, nonReentrant, whenNotPaused. Bounded by `EXCEEDS_SURPLUS`: it can ONLY move funds the
-    ///      vault holds beyond its tracked liabilities, so it can never touch tokens backing a user's
-    ///      balance and never breaks the solvency invariant (totalTracked is untouched; holdings drop by
-    ///      `amount`, which was surplus). Replaces the old unbounded modWithdraw drain vector.
+    /// @param to The recipient.
+    /// @param amount The amount to send — gated only by the real balance.
+    /// @dev onlyAuth, nonReentrant, whenNotPaused. Gated by the REAL balance (`INSUFFICIENT_BALANCE`) so it
+    ///      works even when the ledger is over-committed. NOTE: this is a drain-capable primitive — an admin
+    ///      can move real tokens out; the trust boundary is `onlyAuth` (admin must be a multisig / audited hub).
     function sweepSurplus(address tokenAddress, address to, uint256 amount) external onlyAuth nonReentrant whenNotPaused {
         require(to != address(0), "ZERO_TO");
         require(amount > 0, "ZERO_AMOUNT");
-        require(
-            IERC20(tokenAddress).balanceOf(address(this)) - totalTracked[tokenAddress] >= amount,
-            "EXCEEDS_SURPLUS"
-        );
+        require(IERC20(tokenAddress).balanceOf(address(this)) >= amount, "INSUFFICIENT_BALANCE");
         _safeTransfer(tokenAddress, to, amount);
         emit SurplusSwept(tokenAddress, to, amount);
     }
@@ -349,13 +384,12 @@ contract COCTAssets is ReentrancyGuard {
     /// @notice EMERGENCY: transfer this vault's ENTIRE balance of `token` to the accounts owner. Owner-only.
     /// @param token The BEP20 token to rescue.
     /// @dev ⚠️ FULL DRAIN — unlike `sweepSurplus`, this moves the whole balance, INCLUDING funds that back
-    ///      user vault balances (`totalTracked`), not just surplus. `totalTracked` is left unchanged, so
+    ///      user vault balances (`totalWithdrawable`), not just surplus. `totalWithdrawable` is left unchanged, so
     ///      after a rescue the ledger shows liabilities the vault no longer physically holds and users cannot
     ///      withdraw until the vault is refunded. It is a centralized recovery/migration lever — for routine
     ///      recovery of only the unattributed excess, use `sweepSurplus` instead. Restricted to the accounts
     ///      OWNER (tighter than the admin-level `onlyAuth`); nonReentrant. Reverts NOT_OWNER / NOTHING.
-    function rescueToken(address token) external nonReentrant {
-        require(msg.sender == accounts.owner(), "NOT_OWNER");
+    function rescueToken(address token) external onlyOwner nonReentrant {
         uint256 bal = IERC20(token).balanceOf(address(this));
         require(bal > 0, "NOTHING");
         _safeTransfer(token, msg.sender, bal);
@@ -380,7 +414,7 @@ contract COCTAssets is ReentrancyGuard {
     /// @notice Set the withdrawal fee in basis points (0 disables; capped at 100%). Auth-gated.
     /// @param feeBps The new fee in basis points (e.g. 500 = 5%).
     function setWithdrawalFee(uint256 feeBps) external onlyAuth {
-        require(feeBps <= BPS_DENOMINATOR, "FEE_TOO_HIGH");
+        require(feeBps <= 1_000, "FEE_TOO_HIGH"); // cap 10% — prevents a fee that reverts every withdrawal (NET_ZERO)
         withdrawal_fee = feeBps;
         emit WithdrawalFeeSet(feeBps);
     }
@@ -433,14 +467,25 @@ contract COCTAssets is ReentrancyGuard {
         return false;
     }
 
-    /// @notice Unattributed surplus the vault holds for a token — real holdings minus tracked liabilities
-    ///         (accumulated withdrawal fees + debited/unattributed funds + direct token sends). This is the
-    ///         only pool `creditBalance` can draw new credits from and the only amount an admin can move out
-    ///         beyond what backs a user.
+    /// @notice Unattributed surplus the vault holds beyond what it owes — real holdings minus totalWithdrawable.
+    ///         0 when fully committed or under-funded (does not underflow).
     /// @param tokenAddress The token to query.
-    /// @return The surplus (0 when fully attributed).
+    /// @return The surplus (0 when holdings <= totalWithdrawable).
     function surplus(address tokenAddress) external view returns (uint256) {
-        return IERC20(tokenAddress).balanceOf(address(this)) - totalTracked[tokenAddress];
+        uint256 held = IERC20(tokenAddress).balanceOf(address(this));
+        uint256 owed = totalWithdrawable[tokenAddress];
+        return held > owed ? held - owed : 0;
+    }
+
+    /// @notice HEALTH CHECK — how much the vault is UNDER-funded for a token: totalWithdrawable minus real
+    ///         holdings. 0 = fully funded (every owed balance is payable); >0 = the contract owes this much
+    ///         more than it holds and must be topped up before all withdrawals can be honored.
+    /// @param tokenAddress The token to query.
+    /// @return The funding shortfall (0 when healthy).
+    function shortfall(address tokenAddress) external view returns (uint256) {
+        uint256 held = IERC20(tokenAddress).balanceOf(address(this));
+        uint256 owed = totalWithdrawable[tokenAddress];
+        return owed > held ? owed - held : 0;
     }
 
     /* ------------------- Internal withdrawal pipeline ------------------ */
@@ -457,6 +502,11 @@ contract COCTAssets is ReentrancyGuard {
         uint256 bal = balances[account][tokenAddress];
         require(bal >= amount, "INSUFFICIENT_BALANCE");
 
+        // Real-balance gate: the vault must physically hold enough to pay out. Because reward credits are
+        // inflow-funded (totalWithdrawable may exceed holdings), an owed balance is only payable while the
+        // contract is funded — otherwise this reverts INSUFFICIENT_BALANCE (fund the contract, then retry).
+        require(IERC20(tokenAddress).balanceOf(address(this)) >= amount, "INSUFFICIENT_BALANCE");
+
         // Allowed denominations are the amount gate (empty set disables the check).
         require(isAllowedDenomination(amount), "BAD_DENOMINATION");
 
@@ -466,9 +516,9 @@ contract COCTAssets is ReentrancyGuard {
             coolDown[account] = block.timestamp + withdrawal_cooldown;
         }
 
-        // Effects before interaction. totalTracked drops by the gross amount (the fee stays as surplus).
+        // Effects before interaction. totalWithdrawable drops by the gross amount (the fee stays as surplus).
         balances[account][tokenAddress] = bal - amount;
-        totalTracked[tokenAddress] -= amount;
+        totalWithdrawable[tokenAddress] -= amount;
 
         // Withdrawal fee (bps, default 0), retained in the vault as unattributed surplus.
         uint256 fee = withdrawal_fee > 0 ? (amount * withdrawal_fee) / BPS_DENOMINATOR : 0;

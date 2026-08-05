@@ -12,11 +12,13 @@ pragma solidity 0.8.36;
  * Rewards Module — the COC compensation-plan hub (see docs/REWARDS.md, the source of truth).
  *
  * Six entry tiers (Silver..Black Diamond), 5 cycles each except Black Diamond (unlimited). Each entry:
- * splits 100% (10 admin / 5 marketing / 5 leaders / 80 token-liquidity), accrues a rank-% COCT product,
+ * splits 100% (10 opex / 5 agent / 5 override / 1 product / 79 token-liquidity), accrues a flat 1% COCT product,
  * and raises a single 200% income cap by 2x the entry. Five earning streams — Direct Referral (5%),
  * Daily Passive (1%/day own), Direct Passive (50% referral-L1 mirror), Line Income (10%x10 line-tree
- * mirror), and rank-differential Override — all draw down that income cap and are PAID FROM the reward
- * pool (the liquidityWallet vault balance) via assets.balanceTransfer. Inflow-funded by design.
+ * mirror, auto-compressed past inactive uplines), and rank-differential Override — all draw down that
+ * income cap and accrue to `rewardsBalance`. `withdrawRewards` credits the exact net (minus the stability
+ * haircut) straight to the member's COCTAssets vault balance; the vault is REAL-BALANCE-as-truth and
+ * inflow-funded (see COCTAssets: `totalWithdrawable` may exceed holdings; withdraw is real-balance gated).
  */
 
 /* -------------------------------------------------------------------------- */
@@ -40,9 +42,8 @@ interface ICOCTAssets {
     function balanceOf(address user, address token) external view returns (uint256);
     function debitBalance(address user, address token, uint256 amount) external;
     function creditBalance(address user, address token, uint256 amount) external;
-    function balanceTransfer(address from, address to, address token, uint256 amount) external;
+    function depositFor(address user, address token, uint256 amount) external;
     function sweepSurplus(address token, address to, uint256 amount) external;
-    function surplus(address token) external view returns (uint256);
 }
 
 /// @notice Minimal COCTLiquidity surface: addLiquidityUSDT pulls USDT (approve first); TOKENID is 0 until
@@ -143,9 +144,9 @@ abstract contract Ownable {
 /// @author COCT
 /// @notice The COC compensation-plan hub. Registered as a COCTAccounts admin (accounts.addAdmin), which
 ///         authorizes it to addUser on accounts and debit/credit/transfer balances on the vault.
-/// @dev Self-contained (inlined ReentrancyGuard). All rewards are paid from the reward pool (the
-///      liquidityWallet vault balance) via balanceTransfer, and each draws the payee's single 200% income
-///      cap. See docs/REWARDS.md.
+/// @dev Self-contained (inlined ReentrancyGuard). Cap-drawing rewards accrue to `rewardsBalance` and are
+///      credited to the member's vault balance at `withdrawRewards` (real-balance-gated cash-out on the
+///      inflow-funded vault); each draws the payee's single 200% income cap. See docs/REWARDS.md.
 contract COCTRewards is ReentrancyGuard, Ownable {
     uint256 private constant BPS = 10_000;
 
@@ -158,7 +159,7 @@ contract COCTRewards is ReentrancyGuard, Ownable {
     /// @notice COCTAccounts — referral tree + global one-line. Immutable.
     ICOCTAccounts public immutable accounts;
     /// @notice COCTAssets vault. Immutable.
-    ICOCTAssets public immutable assets;
+    ICOCTAssets public assets;
     /// @notice The structural root anchor (cached from accounts) — excluded from all earning streams.
     address public immutable root;
     /// @notice External COCTLiquidity manager. address(0) / uninitialized disables LP routing.
@@ -167,44 +168,49 @@ contract COCTRewards is ReentrancyGuard, Ownable {
     uint256 public liquiditySlippageBps = 300;
 
     /* ------------------------------- Wallets --------------------------- */
-    /// @notice Receives the 10% Admin allocation (vault balance).
-    address public adminWallet;
-    /// @notice Receives the 5% Marketing allocation.
-    address public marketingWallet;
-    /// @notice Receives the 5% Leaders Group Sales allocation.
-    address public leadersWallet;
-    /// @notice THE REWARD POOL — receives the retained Token-Liquidity share (40% when LP is live, else
-    ///         80%). All earnings are paid FROM this account's vault balance via balanceTransfer on
-    ///         `withdrawRewards`.
+    /// @notice Receives the 10% Opex (operating-expense) allocation — paid out as REAL USDT on each activation (sweepSurplus).
+    address public opexWallet;
+    /// @notice THE DEDICATED AGENT POOL — receives the 5% Agent allocation (vault balance). `claimAgentRewards`
+    ///         pays the first agent up the tree FROM this pool, isolated from the reward/payout pool.
+    address public agentWallet;
+    /// @notice THE DEDICATED PRODUCT POOL — receives the 1% Product allocation (vault balance, USDT). `claimToken`
+    ///         funds the USDT→COCT market swap FROM this pool, isolated from the reward/agent pools.
+    address public productWallet;
+    /// @notice THE REWARD / PAYOUT-BUFFER POOL — receives the 5% Override reserve + the retained Token-Liquidity
+    ///         share (39% when LP is live, else 79%). Under the real-balance model its accumulated USDT is
+    ///         part of the vault's real holdings that back reward cash-outs; it is not drawn directly by
+    ///         `withdrawRewards` (which credits members' balances) — it is the on-chain funding buffer.
     address public liquidityWallet;
 
     /* --------------------------- Split (bps of entry) ------------------ */
-    uint256 public adminBps = 1_000;          // 10%
-    uint256 public marketingBps = 500;        // 5%
-    uint256 public leadersBps = 500;          // 5%
-    uint256 public tokenLiquidityBps = 8_000; // 80% (admin+marketing+leaders+tokenLiquidity == BPS)
-    uint256 public lpBps = 4_000;             // of the entry: portion of the 80% routed to the LP (rest → pool)
+    uint256 public opexBps = 1_000;           // 10% → real USDT to opexWallet
+    uint256 public overrideBps = 500;         // 5%  → reserved into the reward pool (funds override payouts)
+    uint256 public tokenLiquidityBps = 7_900; // 79% (opex+agent+override+product+tokenLiquidity == BPS)
+    uint256 public lpBps = 4_000;             // of the entry: portion of the 79% routed to the LP (rest → pool)
 
     /* --------------------------- Earning params ------------------------ */
     uint256 public directReferralBps = 500;   // 5% to the referral-L1 sponsor, instant
     uint256 public directPassiveBps = 5_000;  // 50% referral-L1 mirror principal
     uint256 public lineIncomeBps = 1_000;     // 10% per line level mirror principal
     uint256 public lineLevels = 10;           // line-tree depth for Line Income
-    uint256 public overrideMaxDepth = 100;    // referral-tree walk cap for Override
+    uint256 public overrideMaxDepth = 100;    // referral-tree walk cap for Override (reused by Agent)
+    uint256 public agentBps = 500;            // 5% to the first agent up the referral tree (UNCAPPED leader incentive)
     uint256 public dailyPassiveBps = 100;     // 1%/day accrual on every mirror
     uint256 public passiveCapBps = 20_000;    // 200% max payout per mirror tranche
     uint256 public incomeCapBps = 20_000;     // +200% (2x entry) added to the income cap per activation
     uint256 public oneDay = 1 days;           // accrual period (configurable for testing)
     uint256 public maxPackages = 200;         // per-array tranche cap (bounds claim loops)
     uint256 public productRate = 100 ether;   // COCT delivered per 1 USDT of accrued product (1e18-scaled):
-                                              // coctOut = tokenBalance × productRate / 1e18. Default 100 (COCT @ $0.01).
+                                              // coctOut = tokenBalance × productRate / 1e18. FALLBACK/INITIAL
+                                              // default = 100e18 → 100 COCT per USDT = $0.01/COCT floor price.
+                                              // productRate = 1e18 / price; retune later via setProductRate.
 
     /* ------------------------------- Tiers ----------------------------- */
     /// @notice Entry amount per tier: [Silver, Gold, Platinum, Diamond, Emerald, Black Diamond].
     uint256[6] public tierEntry;
-    /// @notice Product COCT % (bps) per tier: [0,1,2,3,4,5]%.
-    uint256[6] public tierProductBps;
-    /// @notice Override % (bps) per tier: [0,0,2,3,4,5]%.
+    /// @notice Product COCT entitlement as a FLAT % (bps) of every entry, all tiers. Default 1%.
+    uint256 public productBps = 100;
+    /// @notice Override % (bps) per tier: [0,1,2,3,4,5]% (Silver..Black Diamond).
     uint256[6] public tierOverrideBps;
     /// @notice Stability fee (bps) per tier for Silver..Emerald, applied on `withdrawRewards`; Black Diamond
     ///         (index 5) uses bdStabilityBps instead (cycle-scaled).
@@ -251,6 +257,23 @@ contract COCTRewards is ReentrancyGuard, Ownable {
     mapping(address => uint256) public directPassiveTotal;
     mapping(address => uint256) public lineIncomeTotal;
 
+    /* ------------------------------ User id ---------------------------- */
+    /// @notice Sequential member id, assigned from an INTERNAL counter (`lastUserId`), NOT accounts.totalUsers.
+    ///         Auto-assigned on register (++lastUserId); an admin can set/override via setUserId. 0 = unassigned.
+    mapping(address => uint256) public userId;
+    /// @notice Reverse lookup id => owner (for duplicate detection + lookup). address(0) = id free.
+    mapping(uint256 => address) public userById;
+    /// @notice Highest user id assigned so far — the monotonic counter for auto-assignment.
+    uint256 public lastUserId;
+
+    /* ------------------------------- Agent ----------------------------- */
+    /// @notice Whether an address is a designated agent (network leader). Set by an admin via setAgent.
+    mapping(address => bool) public agent;
+    /// @notice Accrued agent reward (USDT-value) — the 5% allocated to the first agent up a downline's
+    ///         referral tree on each activation. UNCAPPED (independent of incomeCap / rewardsBalance) and
+    ///         claimed directly to the agent's wallet via claimAgentRewards.
+    mapping(address => uint256) public agentRewards;
+
     /* ------------------------------- Pause ----------------------------- */
     bool public paused;
 
@@ -260,12 +283,20 @@ contract COCTRewards is ReentrancyGuard, Ownable {
     event ProductAccrued(address indexed user, uint256 amount);
     event TokenClaimed(address indexed user, uint256 usdtValue, uint256 coctOut);
     event TokenSwapped(address indexed user, uint256 usdtIn, uint256 coctOut);
-    event DepositSplit(address indexed user, uint256 admin, uint256 marketing, uint256 leaders, uint256 pool, uint256 toLp);
+    event DepositSplit(address indexed user, uint256 opex, uint256 agent, uint256 overrideReserve, uint256 product, uint256 pool, uint256 toLp);
     event DirectReferralPaid(address indexed earner, address indexed source, uint256 amount);
     event DailyPassiveSeeded(address indexed user, uint256 principal);
     event DirectPassiveSeeded(address indexed earner, address indexed source, uint256 principal);
     event LineIncomeSeeded(address indexed earner, address indexed source, uint256 level, uint256 principal);
     event OverridePaid(address indexed earner, address indexed source, uint256 amount);
+    /// @notice Emitted when the first agent up a downline's referral tree is allocated the agent reward.
+    event AgentPaid(address indexed agent, address indexed source, uint256 amount);
+    /// @notice Emitted when an agent claims their accrued agent rewards to their wallet.
+    event AgentRewardsClaimed(address indexed agent, uint256 amount);
+    /// @notice Emitted when an address's agent flag is set/unset.
+    event AgentSet(address indexed user, bool isAgent);
+    /// @notice Emitted when a member's userId is assigned (on register) or set/overridden by an admin.
+    event UserIdSet(address indexed user, uint256 indexed id);
     event DailyPassiveClaimed(address indexed user, uint256 amount);
     event DirectPassiveClaimed(address indexed user, uint256 amount);
     event LineIncomeClaimed(address indexed user, uint256 amount);
@@ -274,11 +305,12 @@ contract COCTRewards is ReentrancyGuard, Ownable {
     event RewardsWithdrawn(address indexed user, uint256 gross, uint256 fee, uint256 net);
     event LiquidityRouted(uint256 usdtIn, uint256 liquidityAdded);
     event LiquidityRoutingFailed(uint256 usdtIn, string reason);
-    event WalletsSet(address admin, address marketing, address leaders, address liquidity);
-    event SplitSet(uint256 admin, uint256 marketing, uint256 leaders, uint256 tokenLiquidity, uint256 lp);
+    event WalletsSet(address opex, address agent, address product, address liquidity);
+    event SplitSet(uint256 opex, uint256 agent, uint256 overrideReserve, uint256 product, uint256 tokenLiquidity, uint256 lp);
     event EarningParamsSet(uint256 directReferralBps, uint256 directPassiveBps, uint256 lineIncomeBps, uint256 lineLevels, uint256 overrideMaxDepth, uint256 dailyPassiveBps, uint256 passiveCapBps, uint256 incomeCapBps);
-    event TierTableSet(uint256[6] entry, uint256[6] productBps, uint256[6] overrideBps, uint256[6] stabilityBps);
+    event TierTableSet(uint256[6] entry, uint256[6] overrideBps, uint256[6] stabilityBps);
     event BdStabilitySet(uint256[5] bps);
+    event AssetsSet(address indexed assets);
     event LiquiditySet(address indexed manager);
     event PausedSet(bool paused);
     event ParamSet(string key, uint256 value);
@@ -307,14 +339,13 @@ contract COCTRewards is ReentrancyGuard, Ownable {
         root = ICOCTAccounts(accountsAddr).root();
         liquidity = ILiquidity(liquidityAddr);
 
-        adminWallet = msg.sender;
-        marketingWallet = msg.sender;
-        leadersWallet = msg.sender;
+        opexWallet = msg.sender;
+        agentWallet = msg.sender;
+        productWallet = msg.sender;
         liquidityWallet = msg.sender;
 
         tierEntry = [uint256(20 ether), 50 ether, 100 ether, 500 ether, 1000 ether, 5000 ether];
-        tierProductBps = [uint256(0), 100, 200, 300, 400, 500];
-        tierOverrideBps = [uint256(0), 0, 200, 300, 400, 500];
+        tierOverrideBps = [uint256(0), 100, 200, 300, 400, 500]; // [Silver 0, Gold 1, Plat 2, Diamond 3, Emerald 4, BD 5]%
         tierStabilityBps = [uint256(500), 600, 700, 800, 900, 0]; // index 5 (BD) uses bdStabilityBps
         bdStabilityBps = [uint256(1000), 1500, 2000, 2500, 3000];
 
@@ -322,14 +353,23 @@ contract COCTRewards is ReentrancyGuard, Ownable {
     }
 
     /* ============================== REGISTER =========================== */
-    /// @notice Register into the COC referral tree under `sponsor`. Free; the entry is paid at `activate`.
-    ///         Membership is EOA-only: smart-contract wallets (Safe / ERC-4337) are blocked here, at signup —
-    ///         before any funds are committed — so they never reach `activate`/`withdrawRewards` with trapped
-    ///         funds. (Admins can still add non-EOA members directly via accounts.addUser.)
+    /// @notice Register into the COC referral tree under `sponsor` AND fund the entry: the lowest-tier amount
+    ///         (`tierEntry[0]`, 20 USDT by default) is pulled from the caller into their Funding Wallet
+    ///         (COCTAssets vault) — approve the vault for USDT first. Membership is EOA-only: smart-contract
+    ///         wallets (Safe / ERC-4337) are blocked here, at signup. (Admins can still add non-EOA members
+    ///         directly via accounts.addUser, which skips the entry.)
     /// @param sponsor An existing registered member to sponsor the caller.
-    function register(address sponsor) external whenNotPaused {
+    /// @dev Reverts CALLER_NOT_EOA; addUser guards not-registered / sponsor-exists / not-self / non-zero; the
+    ///      entry pull reverts if the caller hasn't approved the vault or lacks the USDT.
+    function register(address sponsor) external nonReentrant whenNotPaused {
         require(msg.sender == tx.origin, "CALLER_NOT_EOA");
-        accounts.addUser(msg.sender, sponsor); // enforces not-registered / sponsor-exists / not-self / non-zero
+        accounts.addUser(msg.sender, sponsor);
+        userId[msg.sender] = ++lastUserId; // auto-assign the next sequential id (internal counter)
+        userById[lastUserId] = msg.sender;
+        emit UserIdSet(msg.sender, lastUserId);
+        // Registration entry: pull the current lowest-tier amount into the member's Funding Wallet.
+        uint256 entry = tierEntry[0];
+        if (entry > 0) assets.depositFor(msg.sender, USDT, entry);
         emit Registered(msg.sender, sponsor);
     }
 
@@ -345,6 +385,9 @@ contract COCTRewards is ReentrancyGuard, Ownable {
         require(u != root, "ROOT_EXCLUDED");
         (bool found, uint256 tier) = tierIndexOf(amount);
         require(found, "INVALID_ENTRY");
+        // Below Black Diamond rank: any tier is freely activatable (each capped at 5 cycles). Once you have
+        // ever reached Black Diamond (rank BD → rankPlus1 == 6), all lower tiers lock — only BD may activate.
+        if (rankPlus1[u] == 6) require(tier == 5, "BD_LOCKS_LOWER");
         if (tier != 5) require(cycleCount[u][tier] < 5, "CYCLE_LIMIT"); // BD (5) unlimited
         require(assets.balanceOf(u, USDT) >= amount, "INSUFFICIENT_FUNDS");
 
@@ -356,13 +399,13 @@ contract COCTRewards is ReentrancyGuard, Ownable {
         if (rankPlus1[u] < tier + 1) rankPlus1[u] = uint8(tier + 1);
         uint256 capAdd = (amount * incomeCapBps) / BPS; // 2x entry
         incomeCap[u] += capAdd;
-        uint256 productAmt = (amount * tierProductBps[tier]) / BPS;
+        uint256 productAmt = (amount * productBps) / BPS;
         if (productAmt > 0) {
             tokenBalance[u] += productAmt;
             emit ProductAccrued(u, productAmt);
         }
 
-        // 3) Deposit split (credits admin/marketing/leaders + the reward pool; routes LP). Runs BEFORE the
+        // 3) Deposit split (opex real USDT out; agent pool; override reserve + reward pool; routes LP). Runs BEFORE the
         //    instant payouts so the pool holds this entry's contribution when referral/override draw it.
         _splitDeposit(u, amount);
 
@@ -380,8 +423,8 @@ contract COCTRewards is ReentrancyGuard, Ownable {
         _seedPassive(passive[u], amount);
         emit DailyPassiveSeeded(u, amount);
 
-        // 4c) Direct Passive 50% — seed a mirror for the referral-L1 sponsor.
-        if (sponsor != address(0) && sponsor != root) {
+        // 4c) Direct Passive 50% — seed a mirror for the referral-L1 sponsor (only if the sponsor is active).
+        if (sponsor != address(0) && sponsor != root && incomeCap[sponsor] > 0) {
             uint256 dp = (amount * directPassiveBps) / BPS;
             if (dp > 0) {
                 _seedPassive(directPassive[sponsor], dp);
@@ -395,33 +438,48 @@ contract COCTRewards is ReentrancyGuard, Ownable {
         // 4e) Override — rank-differential, instant, up the referral tree.
         _payOverride(u, amount);
 
+        // 4f) Agent — 5% to the first agent up the referral tree (uncapped leader incentive).
+        _payAgent(u, amount);
+
         emit Activated(u, tier, amount, capAdd);
     }
 
     /* --------------------------- Deposit split ------------------------- */
-    /// @dev Splits the entry: admin/marketing/leaders credited (backed by the entry surplus); the
-    ///      Token-Liquidity 80% goes 40% → LP (when live) + 40% → reward pool, else 80% → reward pool.
+    /// @dev Splits the entry. The entry was debited from the caller first (activate), so on a deposit-funded
+    ///      activation the vault physically holds the entry's USDT to cover the real-token legs below.
+    ///      - Opex 10% PAID OUT as real USDT to the external opex wallet (sweepSurplus — real-balance gated,
+    ///        no denomination/cooldown/fee).
+    ///      - Agent 5% credited to the DEDICATED agent pool (agentWallet); drained only at claimAgentRewards.
+    ///      - Override 5% reserved into the reward pool (liquidityWallet) — part of the on-chain funding buffer.
+    ///      - Product 1% credited to the DEDICATED product pool (productWallet) — funds the claimToken swap.
+    ///      - Token-Liquidity 79% goes 40% → LP (when live) + 39% → reward pool, else 79% → reward pool.
     function _splitDeposit(address u, uint256 amount) internal {
-        uint256 adminAmt = (amount * adminBps) / BPS;
-        uint256 mktgAmt = (amount * marketingBps) / BPS;
-        uint256 leadersAmt = (amount * leadersBps) / BPS;
-        _credit(adminWallet, adminAmt);
-        _credit(marketingWallet, mktgAmt);
-        _credit(leadersWallet, leadersAmt);
+        uint256 opexAmt = (amount * opexBps) / BPS;
+        // Opex takes its cut as real USDT to its external wallet, drawn from the entry surplus.
+        if (opexAmt > 0) assets.sweepSurplus(USDT, opexWallet, opexAmt);
 
-        uint256 liq = (amount * tokenLiquidityBps) / BPS; // 80%
+        uint256 agentAmt = (amount * agentBps) / BPS;
+        _credit(agentWallet, agentAmt);                 // dedicated agent pool
+
+        uint256 overrideAmt = (amount * overrideBps) / BPS;
+        _credit(liquidityWallet, overrideAmt);          // override reserve → reward pool
+
+        uint256 productAmt = (amount * productBps) / BPS;
+        _credit(productWallet, productAmt);             // dedicated product pool (funds claimToken swap)
+
+        uint256 liq = (amount * tokenLiquidityBps) / BPS; // 79%
         uint256 toLp;
         uint256 toPool;
         if (_managerReady(liquidity)) {
             toLp = (amount * lpBps) / BPS; // 40%
-            toPool = liq - toLp;           // remainder (40%) — kept in-vault as the reward pool
+            toPool = liq - toLp;           // remainder (39%) — kept in-vault as the reward pool
             _credit(liquidityWallet, toPool);
             if (toLp > 0) _routeLiquidity(toLp);
         } else {
-            toPool = liq;                  // full 80% → reward pool
+            toPool = liq;                  // full 79% → reward pool
             _credit(liquidityWallet, toPool);
         }
-        emit DepositSplit(u, adminAmt, mktgAmt, leadersAmt, toPool, toLp);
+        emit DepositSplit(u, opexAmt, agentAmt, overrideAmt, productAmt, toPool, toLp);
     }
 
     function _credit(address to, uint256 amount) internal {
@@ -452,16 +510,25 @@ contract COCTRewards is ReentrancyGuard, Ownable {
         }));
     }
 
-    /// @dev Seed Line Income mirrors up the global one-line (lineLevels deep, root-terminated).
+    /// @dev Seed Line Income mirrors up the global one-line, COMPRESSED: inactive uplines (incomeCap == 0) are
+    ///      skipped WITHOUT consuming a level, so line income always reaches `lineLevels` ACTIVE uplines
+    ///      (auto-compression). The raw walk is bounded by `overrideMaxDepth` steps to cap gas — the one-line
+    ///      can be arbitrarily long, so without this a run of inactive members could walk the whole membership.
     function _seedLineIncome(address activator, uint256 amount) internal {
         uint256 principal = (amount * lineIncomeBps) / BPS;
         if (principal == 0) return;
         (address up, ) = accounts.line(activator);
-        for (uint256 lvl = 1; lvl <= lineLevels; lvl++) {
+        uint256 paid;   // count of ACTIVE uplines seeded (the compressed level)
+        uint256 steps;  // raw line positions walked (gas bound)
+        while (paid < lineLevels && steps < overrideMaxDepth) {
             if (up == address(0) || up == root) break;
-            _seedPassive(lineIncome[up], principal);
-            emit LineIncomeSeeded(up, activator, lvl, principal);
+            if (incomeCap[up] > 0) { // only active line-uplines earn — increment the level only when we pay
+                paid++;
+                _seedPassive(lineIncome[up], principal);
+                emit LineIncomeSeeded(up, activator, paid, principal);
+            }
             (up, ) = accounts.line(up);
+            steps++;
         }
     }
 
@@ -482,6 +549,24 @@ contract COCTRewards is ReentrancyGuard, Ownable {
                 }
             }
             childBps = upBps;
+            (up, ) = accounts.getAffiliate(up);
+        }
+    }
+
+    /// @dev Agent reward: walk the referral tree up (reusing overrideMaxDepth) and allocate the FIRST agent
+    ///      `agentBps` (5%) of the entry — a leader incentive OUTSIDE the income cap. Accrues to `agentRewards`
+    ///      (no cap draw, no pool touch); funded from the pool at claimAgentRewards. Stops at the first agent.
+    function _payAgent(address activator, uint256 amount) internal {
+        uint256 pay = (amount * agentBps) / BPS;
+        if (pay == 0) return;
+        (address up, ) = accounts.getAffiliate(activator);
+        for (uint256 i = 0; i < overrideMaxDepth; i++) {
+            if (up == address(0) || up == root) break;
+            if (agent[up]) {
+                agentRewards[up] += pay;
+                emit AgentPaid(up, activator, pay);
+                break; // first agent only
+            }
             (up, ) = accounts.getAffiliate(up);
         }
     }
@@ -517,44 +602,53 @@ contract COCTRewards is ReentrancyGuard, Ownable {
         emit LineIncomeClaimed(msg.sender, paid);
     }
 
-    /// @notice Withdraw your accrued `rewardsBalance` to your vault: the `_stabilityBpsOf` fee is deducted
-    ///         (routed to the LP), and the net is credited to your COCTAssets vault balance (then withdrawable
-    ///         via assets.withdraw). Pays only up to the reward pool (liquidityWallet vault balance); any
-    ///         un-paid remainder stays in `rewardsBalance` for a later withdrawal.
-    /// @dev nonReentrant + whenNotPaused. Reverts NOT_REGISTERED / NOTHING / POOL_EMPTY. The fee is moved out
-    ///      of the pool and routed via `_routeLiquidity` when the LP is live; otherwise it stays in the pool.
+    /// @notice Withdraw your FULL accrued `rewardsBalance` to your vault: the rank-based `_stabilityBpsOf` fee
+    ///         is deducted as a haircut and the EXACT net is credited to your COCTAssets vault balance (then
+    ///         withdrawable via assets.withdraw while the contract is funded). No pool clamp — the whole
+    ///         accrued amount is credited; the vault is inflow-funded, so the actual cash-out is gated by the
+    ///         real balance at `assets.withdraw` (INSUFFICIENT_BALANCE until funded).
+    /// @dev nonReentrant + whenNotPaused. Reverts NOT_REGISTERED / NOTHING. The stability fee is a haircut
+    ///      (net credited; the fee is simply not owed → improves vault health), not a live LP contribution.
     function withdrawRewards() external nonReentrant whenNotPaused {
         address u = msg.sender;
         require(accounts.isUser(u), "NOT_REGISTERED");
         uint256 gross = rewardsBalance[u];
         require(gross > 0, "NOTHING");
+        rewardsBalance[u] = 0;
 
-        // Clamp to the reward pool; the un-paid remainder stays accrued for later.
-        uint256 poolBal = assets.balanceOf(liquidityWallet, USDT);
-        uint256 pay = gross < poolBal ? gross : poolBal;
+        uint256 fee = (gross * _stabilityBpsOf(u)) / BPS;
+        uint256 net = gross - fee;
+
+        // Push the EXACT net into the member's vault balance (unbacked credit — inflow-funded).
+        if (net > 0) assets.creditBalance(u, USDT, net);
+        emit RewardsWithdrawn(u, gross, fee, net);
+    }
+
+    /// @notice Claim your accrued agent rewards straight to your wallet (real USDT out). Pays only up to the
+    ///         reward pool; any remainder stays accrued. Gated on the accrued balance, not the current agent
+    ///         flag, so a demoted agent can still claim what they earned.
+    /// @dev nonReentrant + whenNotPaused. Reverts NOTHING / POOL_EMPTY. Moves the pool balance to surplus
+    ///      (debitBalance) then sweeps it to the caller's wallet (sweepSurplus) — no denomination/fee/cooldown.
+    function claimAgentRewards() external nonReentrant whenNotPaused {
+        address u = msg.sender;
+        uint256 amount = agentRewards[u];
+        require(amount > 0, "NOTHING");
+        uint256 poolBal = assets.balanceOf(agentWallet, USDT);
+        uint256 pay = amount < poolBal ? amount : poolBal;
         require(pay > 0, "POOL_EMPTY");
-        rewardsBalance[u] = gross - pay;
-
-        uint256 fee = (pay * _stabilityBpsOf(u)) / BPS;
-        uint256 net = pay - fee;
-
-        // Net → the member's vault balance (pool → user). Order net-first keeps the pool >= fee.
-        if (net > 0) assets.balanceTransfer(liquidityWallet, u, USDT, net);
-        // Fee → LP when the position is live; otherwise it simply remains in the pool.
-        if (fee > 0 && _managerReady(liquidity)) {
-            assets.debitBalance(liquidityWallet, USDT, fee); // pool balance → vault surplus
-            _routeLiquidity(fee);                            // surplus → LP (best-effort; re-pools on failure)
-        }
-        emit RewardsWithdrawn(u, pay, fee, net);
+        agentRewards[u] = amount - pay;
+        assets.debitBalance(agentWallet, USDT, pay);     // dedicated agent pool → vault surplus
+        assets.sweepSurplus(USDT, u, pay);               // surplus → the agent's external wallet
+        emit AgentRewardsClaimed(u, pay);
     }
 
     /// @notice Redeem your accrued product entitlement (`tokenBalance`, USDT-value) as COCT. PREFERRED path:
-    ///         if the LP manager is live and the vault holds enough USDT surplus, swap that USDT → COCT to
-    ///         you (market rate). FALLBACK: deliver COCT from the contract's reserve at `productRate`. The
-    ///         product is separate from the five earning streams, so this does NOT touch your income cap.
+    ///         if the LP manager is live and the dedicated product pool holds enough USDT, swap that USDT →
+    ///         COCT to you (market rate). FALLBACK: deliver COCT from the contract's reserve at `productRate`.
+    ///         The product is separate from the five earning streams, so this does NOT touch your income cap.
     /// @dev Same shape as legacyprime `claimCashBack`/`withdrawToken` + `_deliverProduct`: zeroes the balance
-    ///      (CEI), tries the swap (try/catch, funded via assets.sweepSurplus, no USDT left stranded), else the
-    ///      reserve. Reverts UNDELIVERABLE (rolling back, so your balance is kept) if neither path can pay.
+    ///      (CEI), tries the swap (try/catch, funded from the productWallet pool, unspent USDT re-credited),
+    ///      else the reserve. Reverts UNDELIVERABLE (rolling back, so your balance is kept) if neither pays.
     ///      nonReentrant + whenNotPaused. Reverts NOT_REGISTERED / NO_TOKEN_BALANCE.
     function claimToken() external nonReentrant whenNotPaused {
         address u = msg.sender;
@@ -563,7 +657,7 @@ contract COCTRewards is ReentrancyGuard, Ownable {
         require(amount > 0, "NO_TOKEN_BALANCE");
         tokenBalance[u] = 0; // effect before interactions (CEI); a revert below rolls this back
 
-        // 1) Preferred: swap USDT→COCT via the LP manager (funded from the vault's USDT surplus).
+        // 1) Preferred: swap USDT→COCT via the LP manager (funded from the dedicated product pool).
         if (_trySwapDeliver(u, amount)) return;
 
         // 2) Fallback: deliver COCT from the contract's reserve at productRate.
@@ -573,17 +667,18 @@ contract COCTRewards is ReentrancyGuard, Ownable {
         emit TokenClaimed(u, amount, coctOut);
     }
 
-    /// @dev Best-effort product delivery via a USDT→COCT swap. Returns false (delivering nothing) if the LP
-    ///      manager isn't ready or the vault's USDT surplus can't fund `usdtAmount`. Otherwise it sweeps that
-    ///      USDT out of the vault, approves the manager, and swaps to `to` under try/catch; any unspent USDT
-    ///      (all of it on failure) is returned to the vault so nothing is stranded. Returns true iff COCT was
-    ///      delivered.
+    /// @dev Best-effort product delivery via a USDT→COCT swap, funded from the DEDICATED product pool
+    ///      (productWallet). Returns false (delivering nothing) if the LP manager isn't ready or the product
+    ///      pool can't fund `usdtAmount`. Otherwise it debits the pool → sweeps that USDT out of the vault →
+    ///      swaps to `to` under try/catch; any unspent USDT (all of it on failure) is RE-CREDITED to the
+    ///      product pool so the allocation is never orphaned. Returns true iff COCT was delivered.
     function _trySwapDeliver(address to, uint256 usdtAmount) internal returns (bool) {
         ILiquidity lp = liquidity;
         if (!_managerReady(lp)) return false;
-        if (assets.surplus(USDT) < usdtAmount) return false;
+        if (assets.balanceOf(productWallet, USDT) < usdtAmount) return false;
 
-        assets.sweepSurplus(USDT, address(this), usdtAmount); // pull real USDT out of the vault surplus
+        assets.debitBalance(productWallet, USDT, usdtAmount); // product pool → vault surplus
+        assets.sweepSurplus(USDT, address(this), usdtAmount); // surplus → this contract to swap
         _safeApprove(USDT, address(lp), usdtAmount);
         bool delivered;
         uint256 got;
@@ -595,9 +690,12 @@ contract COCTRewards is ReentrancyGuard, Ownable {
         }
         _safeApprove(USDT, address(lp), 0);
 
-        // Reclaim any unspent USDT back to the vault (all of it on failure; ~0 on a clean swap).
+        // Reclaim any unspent USDT (all of it on failure; ~0 on a clean swap) back to the product pool.
         uint256 leftover = IERC20(USDT).balanceOf(address(this));
-        if (leftover > 0) _safeTransfer(USDT, address(assets), leftover);
+        if (leftover > 0) {
+            _safeTransfer(USDT, address(assets), leftover);
+            assets.creditBalance(productWallet, USDT, leftover); // return unspent USDT to the product pool
+        }
 
         if (delivered) emit TokenSwapped(to, usdtAmount, got);
         return delivered;
@@ -731,26 +829,37 @@ contract COCTRewards is ReentrancyGuard, Ownable {
     }
 
     /* ============================== ADMIN ============================= */
-    /// @notice Set the four wallets (all non-zero). liquidityWallet is the reward pool. The stability fee is
+    /// @notice Set the four wallets (all non-zero, all distinct). opexWallet receives the 10% opex cut as real
+    ///         USDT; agentWallet is the dedicated agent pool; productWallet is the dedicated product pool
+    ///         (funds the claimToken swap); liquidityWallet is the reward/payout pool. The stability fee is
     ///         routed to the LP (not a wallet), so there is no stability wallet.
-    function setWallets(address admin_, address marketing_, address leaders_, address liquidity_) external onlyAuth {
-        require(admin_ != address(0) && marketing_ != address(0) && leaders_ != address(0) && liquidity_ != address(0), "ZERO_WALLET");
-        adminWallet = admin_;
-        marketingWallet = marketing_;
-        leadersWallet = leaders_;
+    function setWallets(address opex_, address agent_, address product_, address liquidity_) external onlyAuth {
+        require(opex_ != address(0) && agent_ != address(0) && product_ != address(0) && liquidity_ != address(0), "ZERO_WALLET");
+        require(
+            opex_ != agent_ && opex_ != product_ && opex_ != liquidity_
+            && agent_ != product_ && agent_ != liquidity_ && product_ != liquidity_,
+            "WALLETS_NOT_DISTINCT"
+        );
+        opexWallet = opex_;
+        agentWallet = agent_;
+        productWallet = product_;
         liquidityWallet = liquidity_;
-        emit WalletsSet(admin_, marketing_, leaders_, liquidity_);
+        emit WalletsSet(opex_, agent_, product_, liquidity_);
     }
 
-    /// @notice Set the deposit split (admin+marketing+leaders+tokenLiquidity must sum to 100%; lp ≤ tokenLiquidity).
-    function setSplit(uint256 admin_, uint256 marketing_, uint256 leaders_, uint256 tokenLiquidity_, uint256 lp_) external onlyAuth {
-        adminBps = admin_;
-        marketingBps = marketing_;
-        leadersBps = leaders_;
+    /// @notice Set the deposit split (opex+agent+override+product+tokenLiquidity must sum to 100%; lp ≤ tokenLiquidity).
+    ///         `agent_` sets `agentBps` (both the agent-pool reserve AND the per-agent payout rate); `product_`
+    ///         sets `productBps` (both the product-pool reserve AND the product-entitlement accrual rate), so
+    ///         each pool always funds its own payouts.
+    function setSplit(uint256 opex_, uint256 agent_, uint256 override_, uint256 product_, uint256 tokenLiquidity_, uint256 lp_) external onlyAuth {
+        opexBps = opex_;
+        agentBps = agent_;
+        overrideBps = override_;
+        productBps = product_;
         tokenLiquidityBps = tokenLiquidity_;
         lpBps = lp_;
         _requireValidSplit();
-        emit SplitSet(admin_, marketing_, leaders_, tokenLiquidity_, lp_);
+        emit SplitSet(opex_, agent_, override_, product_, tokenLiquidity_, lp_);
     }
 
     /// @notice Set the earning parameters (all bps unless noted). Bounds keep the cap/passive math sane.
@@ -781,17 +890,16 @@ contract COCTRewards is ReentrancyGuard, Ownable {
     }
 
     /// @notice Set the tier table (entries strictly increasing; each bps ≤ 100%).
-    function setTierTable(uint256[6] calldata entry, uint256[6] calldata productBps, uint256[6] calldata overrideBps, uint256[6] calldata stabilityBps) external onlyAuth {
+    function setTierTable(uint256[6] calldata entry, uint256[6] calldata overrideBps_, uint256[6] calldata stabilityBps) external onlyAuth {
         for (uint256 i = 0; i < 6; i++) {
             require(entry[i] > 0, "ZERO_ENTRY");
             if (i > 0) require(entry[i] > entry[i - 1], "NOT_INCREASING");
-            require(productBps[i] <= BPS && overrideBps[i] <= BPS && stabilityBps[i] <= BPS, "BPS_TOO_HIGH");
+            require(overrideBps_[i] <= BPS && stabilityBps[i] <= BPS, "BPS_TOO_HIGH");
         }
         tierEntry = entry;
-        tierProductBps = productBps;
-        tierOverrideBps = overrideBps;
+        tierOverrideBps = overrideBps_;
         tierStabilityBps = stabilityBps;
-        emit TierTableSet(entry, productBps, overrideBps, stabilityBps);
+        emit TierTableSet(entry, overrideBps_, stabilityBps);
     }
 
     /// @notice Set the Black Diamond cycle-scaled stability fees (each ≤ 100%).
@@ -799,6 +907,16 @@ contract COCTRewards is ReentrancyGuard, Ownable {
         for (uint256 i = 0; i < 5; i++) require(bps[i] <= BPS, "BPS_TOO_HIGH");
         bdStabilityBps = bps;
         emit BdStabilitySet(bps);
+    }
+
+    /// @notice Repoint the assets vault. AUTH-ONLY. DANGER: the vault custodies ALL member funds — repointing
+    ///         to a different vault strands the balances held in the old one and, if pointed at a malicious
+    ///         vault, enables draining. Use ONLY for a deliberate, audited migration behind the multisig.
+    function setAssets(address assetsAddr) external onlyAuth {
+        require(assetsAddr != address(0), "ZERO_ASSETS");
+        require(assetsAddr.code.length > 0, "NOT_CONTRACT"); // guard against repointing at an EOA/typo
+        assets = ICOCTAssets(assetsAddr);
+        emit AssetsSet(assetsAddr);
     }
 
     /// @notice Set the LP manager (address(0) disables routing → the 80% all goes to the reward pool).
@@ -812,6 +930,30 @@ contract COCTRewards is ReentrancyGuard, Ownable {
         require(bps <= 5000, "SLIPPAGE_TOO_HIGH");
         liquiditySlippageBps = bps;
         emit ParamSet("liquiditySlippageBps", bps);
+    }
+
+    /// @notice Flag/unflag `user` as an agent (network leader eligible for the agent reward). Auth-gated.
+    function setAgent(address user, bool isAgent) external onlyAuth {
+        agent[user] = isAgent;
+        emit AgentSet(user, isAgent);
+    }
+
+    /// @notice Set or auto-assign a member's userId. Auth-gated.
+    /// @param user The member whose id to set.
+    /// @param _id The id to assign; pass 0 to auto-assign the next sequential id (++lastUserId). A non-zero id
+    ///        must not already belong to a different member (ID_TAKEN). Does NOT use accounts.totalUsers().
+    function setUserId(address user, uint256 _id) external onlyAuth {
+        uint256 old = userId[user];
+        if (_id == 0) {
+            _id = ++lastUserId; // auto-assign the next number
+        } else {
+            require(userById[_id] == address(0) || userById[_id] == user, "ID_TAKEN");
+            if (_id > lastUserId) lastUserId = _id; // keep the counter ahead so auto-assign won't collide
+        }
+        if (old != 0 && old != _id) userById[old] = address(0); // free the previous id
+        userId[user] = _id;
+        userById[_id] = user;
+        emit UserIdSet(user, _id);
     }
 
     /// @notice Set the per-array tranche cap (1..1000).
@@ -843,13 +985,16 @@ contract COCTRewards is ReentrancyGuard, Ownable {
     }
 
     function _requireValidSplit() internal view {
-        require(adminBps + marketingBps + leadersBps + tokenLiquidityBps == BPS, "BAD_SPLIT");
+        require(opexBps + agentBps + overrideBps + productBps + tokenLiquidityBps == BPS, "BAD_SPLIT");
         require(lpBps <= tokenLiquidityBps, "LP_GT_LIQUIDITY");
     }
 
     /* -------------------------- LP routing helpers --------------------- */
-    /// @dev Route `amount` USDT to the LP manager (best-effort). Sweeps the surplus out of the vault, hands
-    ///      it to the manager, then returns any leftover to the reward pool. Never reverts activate.
+    /// @dev Route `amount` USDT to the LP manager. The manager call is best-effort (try/catch, leftover
+    ///      re-pooled), BUT the initial `sweepSurplus` is real-balance-gated: if the vault physically lacks
+    ///      `amount` (over-committed), this REVERTS and bubbles up to `activate`. Only an entry backed by a
+    ///      fresh real deposit is guaranteed to have the tokens for this sweep; activating from an unbacked
+    ///      (reward-credited) balance while the vault is under-funded will revert here.
     function _routeLiquidity(uint256 amount) internal {
         ILiquidity lp = liquidity;
         assets.sweepSurplus(USDT, address(this), amount);

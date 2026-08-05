@@ -11,12 +11,12 @@ import { accountsAbi, rewardsAbi, assetsAbi } from "../config/abis.js";
 const USDT = TOKENS.find((t) => t.symbol === "USDT").address;
 
 const TIERS = [
-  { name: "Silver", amount: 20, token: "0% token", note: "5 cycles" },
-  { name: "Gold", amount: 50, token: "1% token", note: "5 cycles" },
-  { name: "Platinum", amount: 100, token: "2% token", note: "5 cycles · 2% override" },
-  { name: "Diamond", amount: 500, token: "3% token", note: "5 cycles · 3% override" },
-  { name: "Emerald", amount: 1000, token: "4% token", note: "5 cycles · 4% override" },
-  { name: "Black Diamond", amount: 5000, token: "5% token", note: "unlimited · 5% override" },
+  { name: "Silver", amount: 20, token: "1% token", note: "5 cycles" },
+  { name: "Gold", amount: 50, token: "1% token", note: "5 cycles · 1% override" },
+  { name: "Platinum", amount: 100, token: "1% token", note: "5 cycles · 2% override" },
+  { name: "Diamond", amount: 500, token: "1% token", note: "5 cycles · 3% override" },
+  { name: "Emerald", amount: 1000, token: "1% token", note: "5 cycles · 4% override" },
+  { name: "Black Diamond", amount: 5000, token: "1% token", note: "unlimited · 5% override" },
 ];
 
 const fmt = (bi) => amt(Number(formatUnits(bi ?? 0n, 18)));
@@ -39,6 +39,8 @@ export default function Subscribe() {
             { address: c.accounts, abi: accountsAbi, functionName: "isUser", args: [address], chainId },
             { address: c.assets, abi: assetsAbi, functionName: "balanceOf", args: [address, USDT], chainId },
             { address: USDT, abi: erc20Abi, functionName: "balanceOf", args: [address], chainId },
+            { address: c.rewards, abi: rewardsAbi, functionName: "getUser", args: [address], chainId },
+            { address: c.rewards, abi: rewardsAbi, functionName: "getCycles", args: [address], chainId },
           ]
         : [],
     query: { enabled: !!address && !!c },
@@ -46,6 +48,10 @@ export default function Subscribe() {
   const isUser = data?.[0]?.result;
   const vaultUsdt = data?.[1]?.result ?? 0n;
   const walletUsdt = data?.[2]?.result ?? 0n;
+  const rw = data?.[3]?.result; // rewards.getUser (activated, rank, …)
+  const cycles = data?.[4]?.result ?? []; // per-tier activation counts [Silver..BD]
+  // Highest tier ever activated; -1 when never activated (so no tier is "below" it).
+  const currentRank = rw?.activated ? Number(rw.rank) : -1;
 
   // Registration required — send unregistered wallets to the Account page to register first.
   useEffect(() => {
@@ -203,12 +209,24 @@ export default function Subscribe() {
 
                     <div className="cw-tokens">
                       <div className="cw-eyebrow">Entry packages</div>
-                      {TIERS.map((t) => {
+                      {TIERS.map((t, i) => {
                         const wei = parseUnits(String(t.amount), 18);
                         const enough = vaultUsdt >= wei;
                         const busy = busyKey === `t${t.amount}`;
+                        const rankLocked = currentRank === 5 && i < 5; // Black Diamond rank locks every lower tier
+                        const cycleLocked = i !== 5 && Number(cycles[i] ?? 0) >= 5; // non-BD 5-cycle cap
+                        const disabled = busy || rankLocked || cycleLocked || !enough;
+                        const label = busy
+                          ? "Activating…"
+                          : rankLocked
+                          ? "Locked"
+                          : cycleLocked
+                          ? "Max cycles"
+                          : enough
+                          ? "Activate"
+                          : "Fund vault";
                         return (
-                          <div className="cw-token card-box" key={t.amount}>
+                          <div className="cw-token card-box" key={t.amount} style={rankLocked || cycleLocked ? { opacity: 0.55 } : undefined}>
                             <span className="cw-token-sym">
                               {t.name}
                               <span
@@ -221,10 +239,10 @@ export default function Subscribe() {
                               type="button"
                               className="cw-btn cw-btn--primary"
                               style={{ flex: "0 0 auto", minWidth: 112 }}
-                              disabled={busy || !enough}
+                              disabled={disabled}
                               onClick={() => doActivate(t)}
                             >
-                              {busy ? "Activating…" : enough ? "Activate" : "Fund vault"}
+                              {label}
                             </button>
                           </div>
                         );

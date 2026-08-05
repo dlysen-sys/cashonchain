@@ -5,7 +5,8 @@
 // ─────────────────────────────────────────────────────────────
 
 export const site = {
-  brand: "C",
+  brand: "C", // fallback text mark (used only if `logo` is unset)
+  logo: "/logo512.png", // brand emblem (512px, ~317KB) — header badge + floating hero. Source: /logo.png
   name: { first: "Cash", last: "onChain" },
 
   // Words cycled by the typing effect in the hero.

@@ -10,7 +10,13 @@ export default function StaticHeader() {
   return (
     <ul className={`header${menuOpen ? " opened" : ""}`}>
       <div className="logo">
-        <Link to="/home"><span>{site.brand}</span></Link>
+        <Link to="/home">
+          {site.logo ? (
+            <img className="brand-logo" src={site.logo} alt={`${site.name.first}${site.name.last}`} />
+          ) : (
+            <span>{site.brand}</span>
+          )}
+        </Link>
       </div>
       <div className="top-menu">
         <ul>

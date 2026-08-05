@@ -1,5 +1,9 @@
 // Reusable floating "visa-style" card (adapted from orbix's MembershipCard) — themed for COC.
 // Styles live in overrides.css (.coc-memcard*). Use it anywhere a balance/rank badge looks good.
+// Pass `tier` (Silver/Gold/Platinum/Diamond/Emerald/Black Diamond) to color the card to the
+// subscription — falls back to the default green when the tier is unknown/not activated.
+const TIER_SLUGS = new Set(["silver", "gold", "platinum", "diamond", "emerald", "black-diamond"]);
+
 export default function MembershipCard({
   balance = "0.00",
   currency = "USDT",
@@ -8,9 +12,12 @@ export default function MembershipCard({
   cardId = "•••• •••• •••• 0000",
   footer = "Cash On Chain",
   brand = "COCT",
+  tier = "",
 }) {
+  const slug = String(tier).trim().toLowerCase().replace(/\s+/g, "-");
+  const tierClass = TIER_SLUGS.has(slug) ? ` coc-memcard--${slug}` : "";
   return (
-    <div className="coc-memcard">
+    <div className={`coc-memcard${tierClass}`}>
       <div className="coc-memcard__shine" />
       <div className="coc-memcard__top">
         <span className="coc-memcard__brand">

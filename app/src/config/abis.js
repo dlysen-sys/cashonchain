@@ -123,9 +123,8 @@ export const rewardsAbi = [
     ],
   },
   {
-    // public mapping getter: overrideTotal(address) => lifetime rank-differential override
-    // commission paid (USDT, 18dp). Override is paid instantly to the vault, so this is a total,
-    // not a claimable pending.
+    // public mapping getter: overrideTotal(address) => lifetime rank-differential override commission
+    // accrued (USDT, 18dp), into the rewardsBalance ledger. A running total, not a separate claimable.
     type: "function",
     name: "overrideTotal",
     stateMutability: "view",
@@ -134,7 +133,7 @@ export const rewardsAbi = [
   },
   {
     // public mapping getter: directReferralTotal(address) => lifetime direct-referral (L1 sponsor)
-    // commission paid (USDT, 18dp). Instant to vault — a total, not a claimable pending.
+    // commission accrued (USDT, 18dp), into the rewardsBalance ledger. A running total, not a separate claimable.
     type: "function",
     name: "directReferralTotal",
     stateMutability: "view",
@@ -149,13 +148,56 @@ export const rewardsAbi = [
     inputs: [{ name: "", type: "address" }],
     outputs: [{ type: "uint256" }],
   },
+  {
+    // getCycles(address) => per-tier activation counts [Silver..BlackDiamond]; non-BD caps at 5.
+    type: "function",
+    name: "getCycles",
+    stateMutability: "view",
+    inputs: [{ name: "u", type: "address" }],
+    outputs: [{ type: "uint256[6]" }],
+  },
+  {
+    // public mapping getter: userId(address) => sequential member id assigned at registration (0 if none).
+    type: "function",
+    name: "userId",
+    stateMutability: "view",
+    inputs: [{ name: "", type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    // public mapping getter: agent(address) => whether the address is a designated agent (network leader).
+    type: "function",
+    name: "agent",
+    stateMutability: "view",
+    inputs: [{ name: "", type: "address" }],
+    outputs: [{ type: "bool" }],
+  },
+  {
+    // public mapping getter: agentRewards(address) => accrued agent reward (USDT, 18dp), claimed to wallet.
+    type: "function",
+    name: "agentRewards",
+    stateMutability: "view",
+    inputs: [{ name: "", type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
   // Claims — each realizes the accrued pending stream into the caller's rewardsBalance ledger (no fee).
   { type: "function", name: "claimDailyPassive", stateMutability: "nonpayable", inputs: [], outputs: [] },
   { type: "function", name: "claimDirectPassive", stateMutability: "nonpayable", inputs: [], outputs: [] },
   { type: "function", name: "claimLineIncome", stateMutability: "nonpayable", inputs: [], outputs: [] },
   { type: "function", name: "claimToken", stateMutability: "nonpayable", inputs: [], outputs: [] },
-  // Withdraw the rewardsBalance ledger to the vault (stability fee deducted + routed to LP).
+  // Withdraw: credits the EXACT net (rewardsBalance − rank stability haircut) to your Funding Wallet
+  // balance (no pool clamp); actual cash-out is then via assets.withdraw (real-balance gated).
   { type: "function", name: "withdrawRewards", stateMutability: "nonpayable", inputs: [], outputs: [] },
+  // Claim accrued agent rewards straight to the caller's wallet (agents / network leaders).
+  { type: "function", name: "claimAgentRewards", stateMutability: "nonpayable", inputs: [], outputs: [] },
+  // Admin: flag/unflag an address as an agent.
+  {
+    type: "function",
+    name: "setAgent",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "user", type: "address" }, { name: "isAgent", type: "bool" }],
+    outputs: [],
+  },
 ];
 
 export const assetsAbi = [

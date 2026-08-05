@@ -3,6 +3,9 @@
 **Contract:** `projects/coc/contracts/rewards.sol` (`COCTRewards`) — new hub implementing this plan.
 **Status:** IMPLEMENTED 2026-08-03 (rewards.sol) — awaiting tests.
 **Settlement:** USDT (`0x55d398…7955`, 18-dp). **Product token:** COCT (`0x13c6f832…A77`).
+**COCT initial price:** **1 COCT = 0.01 USDT** (launch/floor). Encoded as the fallback `rewards.productRate`
+default = `100e18` (= `1e18 / 0.01` → 100 COCT delivered per 1 USDT of product value). Retunable on-chain via
+`setProductRate` (`productRate = 1e18 / price`); the market/LP price is used directly when the swap path is live.
 **Depends on:** `COCTAccounts` (referral tree + global one-line) · `COCTAssets` (solvency-guarded vault) · `COCTLiquidity` (USDT/COCT LP).
 
 > Money-flow model: every reward is paid from the **reward pool** (the `liquidityWallet` vault balance)

@@ -5,11 +5,54 @@ import { wagmiConfig } from "../lib/appkit.js";
 import { shortAddr } from "../lib/format.js";
 import { affiliateLink } from "../lib/affiliate.js";
 import { contractsFor } from "../config/contracts.js";
-import { accountsAbi } from "../config/abis.js";
+import { accountsAbi, rewardsAbi } from "../config/abis.js";
 
 const PAGE = 10;
 const ZERO = "0x0000000000000000000000000000000000000000";
 const isZero = (a) => !a || a.toLowerCase() === ZERO;
+
+// Tier entry amounts (USD) and names, indexed [Silver..Black Diamond] — used to turn per-tier activation
+// counts (rewards.getCycles) into a total activated amount + the member's highest tier (rank).
+const TIER_USD = [20, 50, 100, 500, 1000, 5000];
+const TIER_NAMES = ["Silver", "Gold", "Platinum", "Diamond", "Emerald", "Black Diamond"];
+
+// Reads a member's per-tier activation counts and returns their total activated USD + highest tier reached.
+function useActivated(rewards, address, chainId) {
+  const { data } = useReadContract({
+    address: rewards,
+    abi: rewardsAbi,
+    functionName: "getCycles",
+    args: [address],
+    chainId,
+    query: { enabled: !!rewards && !!address },
+  });
+  const cycles = data ?? [];
+  let total = 0;
+  let top = -1;
+  for (let i = 0; i < cycles.length; i++) {
+    const n = Number(cycles[i] ?? 0n);
+    total += n * TIER_USD[i];
+    if (n > 0) top = i;
+  }
+  return { total, tier: top >= 0 ? TIER_NAMES[top] : null };
+}
+
+// The "Activated" table cell: total activated USD with the highest tier (rank) as a subtle suffix; "—" if none.
+function ActivatedCell({ rewards, address, chainId }) {
+  const { total, tier } = useActivated(rewards, address, chainId);
+  return (
+    <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+      {total > 0 ? (
+        <>
+          ${total.toLocaleString()}
+          <span className="coc-tree__muted"> · {tier}</span>
+        </>
+      ) : (
+        <span className="coc-tree__muted">—</span>
+      )}
+    </td>
+  );
+}
 
 // Tree page — two genealogies for the connected wallet, both as table rows:
 //   • Affiliate tree: referral tree, lazy-expanded per node (getAffiliate/getChildren).
@@ -82,9 +125,9 @@ export default function Tree() {
                     </div>
 
                     {tab === "affiliate" ? (
-                      <AffiliateTree address={address} accounts={c.accounts} chainId={chainId} />
+                      <AffiliateTree address={address} accounts={c.accounts} rewards={c.rewards} chainId={chainId} />
                     ) : (
-                      <LineTree address={address} accounts={c.accounts} chainId={chainId} />
+                      <LineTree address={address} accounts={c.accounts} rewards={c.rewards} chainId={chainId} />
                     )}
                   </>
                 )}
@@ -134,7 +177,7 @@ function AffiliateLinkCard({ address }) {
 }
 
 /* ------------------------------ Affiliate tree ----------------------------- */
-function AffiliateTree({ address, accounts, chainId }) {
+function AffiliateTree({ address, accounts, rewards, chainId }) {
   return (
     <div className="cw-tokens">
       <div className="cw-eyebrow">Affiliate tree (referral)</div>
@@ -142,11 +185,12 @@ function AffiliateTree({ address, accounts, chainId }) {
         <thead>
           <tr>
             <th>Member</th>
+            <th style={{ textAlign: "right" }}>Activated</th>
             <th style={{ textAlign: "right" }}>Directs</th>
           </tr>
         </thead>
         <tbody>
-          <AffNode address={address} accounts={accounts} chainId={chainId} depth={0} you />
+          <AffNode address={address} accounts={accounts} rewards={rewards} chainId={chainId} depth={0} you />
         </tbody>
       </table>
     </div>
@@ -154,7 +198,7 @@ function AffiliateTree({ address, accounts, chainId }) {
 }
 
 // One referral-tree node. Reads its direct count always; loads children only when expanded (lazy).
-function AffNode({ address, accounts, chainId, depth, you }) {
+function AffNode({ address, accounts, rewards, chainId, depth, you }) {
   const [open, setOpen] = useState(false);
   const [limit, setLimit] = useState(PAGE);
 
@@ -197,22 +241,23 @@ function AffNode({ address, accounts, chainId, depth, you }) {
             </span>
           </span>
         </td>
+        <ActivatedCell rewards={rewards} address={address} chainId={chainId} />
         <td style={{ textAlign: "right" }}>{directs}</td>
       </tr>
       {open && isLoading && children.length === 0 && (
         <tr>
-          <td colSpan={2} className="coc-tree__muted" style={{ paddingLeft: (depth + 1) * 18 }}>
+          <td colSpan={3} className="coc-tree__muted" style={{ paddingLeft: (depth + 1) * 18 }}>
             Loading…
           </td>
         </tr>
       )}
       {open &&
         children.map((ch) => (
-          <AffNode key={ch} address={ch} accounts={accounts} chainId={chainId} depth={depth + 1} />
+          <AffNode key={ch} address={ch} accounts={accounts} rewards={rewards} chainId={chainId} depth={depth + 1} />
         ))}
       {open && total > children.length && (
         <tr>
-          <td colSpan={2} style={{ paddingLeft: (depth + 1) * 18 }}>
+          <td colSpan={3} style={{ paddingLeft: (depth + 1) * 18 }}>
             <button className="coc-tree__more" onClick={() => setLimit((l) => l + PAGE)}>
               Load more ({children.length}/{total})
             </button>
@@ -224,7 +269,7 @@ function AffNode({ address, accounts, chainId, depth, you }) {
 }
 
 /* -------------------------------- Line tree -------------------------------- */
-function LineTree({ address, accounts, chainId }) {
+function LineTree({ address, accounts, rewards, chainId }) {
   const [members, setMembers] = useState([]); // addresses below you, in line order
   const [cursor, setCursor] = useState(null); // last node walked (start = you)
   const [hasMore, setHasMore] = useState(true);
@@ -276,6 +321,7 @@ function LineTree({ address, accounts, chainId }) {
           <tr>
             <th style={{ width: 48 }}>#</th>
             <th>Line member</th>
+            <th style={{ textAlign: "right" }}>Activated</th>
           </tr>
         </thead>
         <tbody>
@@ -287,6 +333,7 @@ function LineTree({ address, accounts, chainId }) {
                 <span className="coc-tree__you"> you</span>
               </span>
             </td>
+            <ActivatedCell rewards={rewards} address={address} chainId={chainId} />
           </tr>
           {members.map((m, i) => (
             <tr key={m}>
@@ -294,11 +341,12 @@ function LineTree({ address, accounts, chainId }) {
               <td>
                 <span className="coc-tree__addr">{shortAddr(m)}</span>
               </td>
+              <ActivatedCell rewards={rewards} address={m} chainId={chainId} />
             </tr>
           ))}
           {members.length === 0 && !loading && (
             <tr>
-              <td colSpan={2} className="coc-tree__muted">
+              <td colSpan={3} className="coc-tree__muted">
                 No members below you in the line yet.
               </td>
             </tr>

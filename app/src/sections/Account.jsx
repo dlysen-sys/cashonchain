@@ -17,6 +17,7 @@ import { getStoredSponsor, clearStoredSponsor } from "../lib/affiliate.js";
 
 const RANKS = ["Silver", "Gold", "Platinum", "Diamond", "Emerald", "Black Diamond"];
 const MIN_DEPOSIT = 20; // USDT — smallest membership tier; block anything below this in the UI
+const REGISTER_ENTRY = 20; // USDT — lowest-tier entry pulled into the Funding Wallet on register()
 const USDT = TOKENS.find((t) => t.symbol === "USDT").address;
 const COCT = TOKENS.find((t) => t.symbol === "COCT").address;
 const ZERO = "0x0000000000000000000000000000000000000000";
@@ -50,6 +51,8 @@ export default function Account() {
             { address: USDT, abi: erc20Abi, functionName: "balanceOf", args: [address], chainId },
             { address: c.rewards, abi: rewardsAbi, functionName: "overrideTotal", args: [address], chainId },
             { address: c.rewards, abi: rewardsAbi, functionName: "directReferralTotal", args: [address], chainId },
+            { address: c.rewards, abi: rewardsAbi, functionName: "agentRewards", args: [address], chainId },
+            { address: c.rewards, abi: rewardsAbi, functionName: "userId", args: [address], chainId },
           ]
         : [],
     // Re-read every 15s so accruing pending rewards (daily/direct/line) tick up without a manual reload.
@@ -63,6 +66,8 @@ export default function Account() {
   const walletUsdt = info?.[4]?.result ?? 0n; // USDT in the wallet (not the vault)
   const overrideEarned = info?.[5]?.result ?? 0n; // lifetime override commission (paid to vault)
   const directReferralEarned = info?.[6]?.result ?? 0n; // lifetime direct-referral commission (paid to vault)
+  const agentRewards = info?.[7]?.result ?? 0n; // accrued agent reward, claimed to wallet
+  const memberId = info?.[8]?.result ?? 0n; // sequential member id assigned at registration
 
   // ---- register (write) ----
   const [sponsor, setSponsor] = useState("");
@@ -115,6 +120,22 @@ export default function Account() {
     if (!isAddress(sponsor)) return setError("Enter a valid sponsor address.");
     setStatus("pending");
     try {
+      // Registration pulls the lowest-tier entry (REGISTER_ENTRY USDT) into the Funding Wallet, so the
+      // wallet must hold it and have approved the vault. Ensure both, then register.
+      const entryWei = parseUnits(String(REGISTER_ENTRY), 18);
+      const bal = await readContract(wagmiConfig, {
+        address: USDT, abi: erc20Abi, functionName: "balanceOf", args: [address], chainId,
+      });
+      if (bal < entryWei) throw new Error(`Registration requires ${REGISTER_ENTRY} USDT in your wallet.`);
+      const allowance = await readContract(wagmiConfig, {
+        address: USDT, abi: erc20Abi, functionName: "allowance", args: [address, c.assets], chainId,
+      });
+      if (allowance < entryWei) {
+        const ah = await writeContract(wagmiConfig, {
+          address: USDT, abi: erc20Abi, functionName: "approve", args: [c.assets, entryWei], chainId,
+        });
+        await waitForTransactionReceipt(wagmiConfig, { hash: ah, chainId });
+      }
       // useWriteContract uses the provider's connected connector; chainId makes it switch/prompt if needed.
       const hash = await writeContractAsync({
         address: c.rewards,
@@ -326,7 +347,8 @@ export default function Account() {
                         Join Cash On Chain
                       </div>
                       <p className="cw-modal-sub" style={{ opacity: 0.75 }}>
-                        Register under a sponsor to activate your account, then buy an entry package.
+                        Registration includes a {REGISTER_ENTRY} USDT entry, deposited to your Funding Wallet
+                        (approve the vault when prompted). Then activate a tier from that balance.
                       </p>
                     </div>
                     <div className="cw-field">
@@ -365,6 +387,7 @@ export default function Account() {
                       badge={rankName}
                       label="Funding Wallet"
                       cardId={addrToCardId(address)}
+                      tier={rw?.activated ? RANKS[Number(rw.rank)] : ""}
                     />
 
                     <div className="cw-actions" style={{ margin: "14px 0 18px" }}>
@@ -388,6 +411,10 @@ export default function Account() {
 
                     <div className="cw-tokens">
                       <div className="cw-eyebrow">Account</div>
+                      <div className="cw-token card-box">
+                        <span className="cw-token-sym">Member ID</span>
+                        <span className="cw-token-amt">{memberId > 0n ? `#${memberId.toString()}` : "—"}</span>
+                      </div>
                       <div className="cw-token card-box">
                         <span className="cw-token-sym">Status</span>
                         <span className="cw-token-amt">{active ? "Active" : "Inactive"}</span>
@@ -509,6 +536,30 @@ export default function Account() {
                         Wallet you can withdraw to your external wallet.
                       </p>
                     </div>
+
+                    {agentRewards > 0n && (
+                      <div className="cw-tokens">
+                        <div className="cw-eyebrow">Agent Rewards</div>
+                        <div className="cw-token card-box">
+                          <span className="cw-token-sym">Available (to wallet)</span>
+                          <span className="cw-token-right">
+                            <span className="cw-token-amt">{fmt(agentRewards)} USDT</span>
+                            <button
+                              type="button"
+                              className="cw-claim"
+                              disabled={!(agentRewards > 0n) || !!claiming}
+                              onClick={() => doClaim("claimAgentRewards", "agent rewards to your wallet")}
+                            >
+                              {claiming === "claimAgentRewards" ? "Claiming…" : "Claim to wallet"}
+                            </button>
+                          </span>
+                        </div>
+                        <p className="cw-modal-sub" style={{ opacity: 0.7, margin: "4px 2px 0" }}>
+                          Network-leader incentive (uncapped). Claiming sends USDT straight to your connected
+                          wallet.
+                        </p>
+                      </div>
+                    )}
 
                     <div className="cw-tokens">
                       <div className="cw-eyebrow">Funding Wallet</div>

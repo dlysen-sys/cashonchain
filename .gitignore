@@ -13,3 +13,4 @@ dist.zip
 # os / editor
 .DS_Store
 *.log
+.gstack/
