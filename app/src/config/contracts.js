@@ -11,9 +11,9 @@ export const CONTRACTS_BY_CHAIN = {
     liquidity: "0xBf946e19cc916C63dB0d348786d4402cC03410B9",
   },
   31337: {
-    accounts: "0x3155755b79aa083bd953911c92705b7aa82a18f9",
-    assets: "0x5bf5b11053e734690269c6b9d438f8c9d48f528a",
-    rewards: "0xffa7ca1aeeebbc30c874d32c7e22f052bbea0429",
+    accounts: "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+    assets: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+    rewards: "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
   },
 };
 

@@ -141,6 +141,30 @@ export const rewardsAbi = [
     outputs: [{ type: "uint256" }],
   },
   {
+    // public mapping getter: dailyPassiveTotal(address) => lifetime daily-passive collected (USDT, 18dp).
+    type: "function",
+    name: "dailyPassiveTotal",
+    stateMutability: "view",
+    inputs: [{ name: "", type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    // public mapping getter: directPassiveTotal(address) => lifetime direct-passive collected (USDT, 18dp).
+    type: "function",
+    name: "directPassiveTotal",
+    stateMutability: "view",
+    inputs: [{ name: "", type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    // public mapping getter: lineIncomeTotal(address) => lifetime line-income collected (USDT, 18dp).
+    type: "function",
+    name: "lineIncomeTotal",
+    stateMutability: "view",
+    inputs: [{ name: "", type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
     // public mapping getter: rewardsBalance(address) => accrued, not-yet-withdrawn reward income (USDT, 18dp).
     type: "function",
     name: "rewardsBalance",

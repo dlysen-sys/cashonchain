@@ -11,10 +11,10 @@ export const site = {
 
   // Words cycled by the typing effect in the hero.
   roles: [
-    "Leverage Your Crypto.",
-    "Multiply Your Assets.",
-    "Given Network Systems.",
-    "Opportunity for the next level.",
+    "Concentrated community effort.",
+    "Oneline opportunity income stream.",
+    "Unlimted income potential.",
+    "Global decentralized network.",
   ],
 
   // Left sidebar navigation (tab id must match a section key below).
@@ -22,8 +22,9 @@ export const site = {
     { id: "home", label: "Home", icon: "la la-home" },
     { id: "account", label: "Account", icon: "la la-user" },
     { id: "subscribe", label: "subscribe", icon: "la la-bell" },
-    { id: "wallet", label: "wallet", icon: "la la-credit-card" },
     { id: "tree", label: "tree", icon: "la la-sitemap" },
+    { id: "wallet", label: "wallet", icon: "la la-credit-card" },
+    { id: "market", label: "Market", icon: "la la-store", svg: "store" },
   ],
 
   // Only verified profiles are listed. Add LinkedIn / X / Telegram here

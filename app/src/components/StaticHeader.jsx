@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { site } from "../data/site.js";
+import NavIcon from "./NavIcon.jsx";
 
 // Non-tab header for standalone routes (blog, wallet, …). Each nav id maps to a route (/${id});
 // the item matching the current URL gets the active/selected classes so its icon takes the accent.
@@ -28,7 +29,7 @@ export default function StaticHeader() {
                 className={`react-tabs__tab${active ? " active react-tabs__tab--selected" : ""}`}
               >
                 <Link to={`/${n.id}`}>
-                  <span className={`icon ${n.icon}`}></span>
+                  <NavIcon item={n} />
                   <span className="link">{n.label}</span>
                 </Link>
               </li>

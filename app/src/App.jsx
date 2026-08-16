@@ -6,6 +6,7 @@ import Accounts from "./pages/Accounts.jsx";
 import Subscribe from "./pages/Subscribe.jsx";
 import Tree from "./pages/Tree.jsx";
 import Wallet from "./pages/Wallet.jsx";
+import Market from "./pages/Market.jsx";
 import Blog from "./pages/Blog.jsx";
 
 export default function App() {
@@ -19,6 +20,7 @@ export default function App() {
           <Route path="/subscribe" element={<Subscribe />} />
           <Route path="/tree" element={<Tree />} />
           <Route path="/wallet" element={<Wallet />} />
+          <Route path="/market" element={<Market />} />
           {/* Background variants render the same layout; the switcher sets the mode. */}
           <Route path="/home-video" element={<HomeLayout />} />
           <Route path="/home-particles" element={<HomeLayout />} />

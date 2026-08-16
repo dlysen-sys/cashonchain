@@ -63,7 +63,7 @@ export default function Home() {
               className="coc-usercount"
               style={{
                 fontFamily: "'Orbitron', ui-monospace, SFMono-Regular, Menlo, monospace",
-                fontSize: 44,
+                fontSize: 36,
                 fontWeight: 800,
                 letterSpacing: "0.14em",
                 lineHeight: 1,
@@ -74,10 +74,10 @@ export default function Home() {
             </span>
             <span
               style={{
-                fontSize: 32,
+                fontSize: 24,
                 fontWeight: 700,
-                letterSpacing: "0.8em",
-                paddingLeft: "0.5em",
+                letterSpacing: "0.9em",
+                paddingLeft: "0.9em",
                 textTransform: "uppercase",
                 color: "#ffffff",
                 opacity: 1,

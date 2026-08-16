@@ -52,7 +52,9 @@ export default function Account() {
             { address: c.rewards, abi: rewardsAbi, functionName: "overrideTotal", args: [address], chainId },
             { address: c.rewards, abi: rewardsAbi, functionName: "directReferralTotal", args: [address], chainId },
             { address: c.rewards, abi: rewardsAbi, functionName: "agentRewards", args: [address], chainId },
-            { address: c.rewards, abi: rewardsAbi, functionName: "userId", args: [address], chainId },
+            { address: c.rewards, abi: rewardsAbi, functionName: "dailyPassiveTotal", args: [address], chainId },
+            { address: c.rewards, abi: rewardsAbi, functionName: "directPassiveTotal", args: [address], chainId },
+            { address: c.rewards, abi: rewardsAbi, functionName: "lineIncomeTotal", args: [address], chainId },
           ]
         : [],
     // Re-read every 15s so accruing pending rewards (daily/direct/line) tick up without a manual reload.
@@ -67,7 +69,12 @@ export default function Account() {
   const overrideEarned = info?.[5]?.result ?? 0n; // lifetime override commission (paid to vault)
   const directReferralEarned = info?.[6]?.result ?? 0n; // lifetime direct-referral commission (paid to vault)
   const agentRewards = info?.[7]?.result ?? 0n; // accrued agent reward, claimed to wallet
-  const memberId = info?.[8]?.result ?? 0n; // sequential member id assigned at registration
+  const dailyPassiveEarned = info?.[8]?.result ?? 0n; // lifetime daily-passive collected
+  const directPassiveEarned = info?.[9]?.result ?? 0n; // lifetime direct-passive collected
+  const lineIncomeEarned = info?.[10]?.result ?? 0n; // lifetime line-income collected
+  // Total income rewards = sum of the five earning streams (agent reward is separate).
+  const totalIncome =
+    directReferralEarned + overrideEarned + dailyPassiveEarned + directPassiveEarned + lineIncomeEarned;
 
   // ---- register (write) ----
   const [sponsor, setSponsor] = useState("");
@@ -409,12 +416,38 @@ export default function Account() {
                       </button>
                     </div>
 
+                    {/* Total income rewards — sum of the five earning streams. */}
+                    <div className="coc-income-report card-box">
+                      <div className="coc-income-total">
+                        <span className="cw-total-label">Total Income Rewards</span>
+                        <span className="cw-total-value">{fmt(totalIncome)} USDT</span>
+                      </div>
+                      <div className="coc-income-rows">
+                        <div className="coc-income-row">
+                          <span>Direct Referral</span>
+                          <span>{fmt(directReferralEarned)} USDT</span>
+                        </div>
+                        <div className="coc-income-row">
+                          <span>Override</span>
+                          <span>{fmt(overrideEarned)} USDT</span>
+                        </div>
+                        <div className="coc-income-row">
+                          <span>Daily Passive</span>
+                          <span>{fmt(dailyPassiveEarned)} USDT</span>
+                        </div>
+                        <div className="coc-income-row">
+                          <span>Direct Passive</span>
+                          <span>{fmt(directPassiveEarned)} USDT</span>
+                        </div>
+                        <div className="coc-income-row">
+                          <span>Line Income</span>
+                          <span>{fmt(lineIncomeEarned)} USDT</span>
+                        </div>
+                      </div>
+                    </div>
+
                     <div className="cw-tokens">
                       <div className="cw-eyebrow">Account</div>
-                      <div className="cw-token card-box">
-                        <span className="cw-token-sym">Member ID</span>
-                        <span className="cw-token-amt">{memberId > 0n ? `#${memberId.toString()}` : "—"}</span>
-                      </div>
                       <div className="cw-token card-box">
                         <span className="cw-token-sym">Status</span>
                         <span className="cw-token-amt">{active ? "Active" : "Inactive"}</span>
@@ -515,7 +548,7 @@ export default function Account() {
                     <div className="cw-tokens">
                       <div className="cw-eyebrow">Rewards Wallet</div>
                       <div className="cw-token card-box">
-                        <span className="cw-token-sym">Available to transfer</span>
+                        <span className="cw-token-sym">Available</span>
                         <span className="cw-token-right">
                           <span className="cw-token-amt">{fmt(rw?.rewardsBalance)} USDT</span>
                           <button
@@ -526,13 +559,13 @@ export default function Account() {
                               doClaim("withdrawRewards", "rewards to your Funding Wallet (stability fee applied)")
                             }
                           >
-                            {claiming === "withdrawRewards" ? "Transferring…" : "Transfer to Funding Wallet"}
+                            {claiming === "withdrawRewards" ? "Transferring…" : "Transfer to Funding"}
                           </button>
                         </span>
                       </div>
                       <p className="cw-modal-sub" style={{ opacity: 0.7, margin: "4px 2px 0" }}>
                         Claim the income above to add it to your Rewards Wallet, then transfer it to your Funding
-                        Wallet — a rank-based stability fee is deducted and added to liquidity. From the Funding
+                        Wallet — a rank-based stability fee is deducted. From the Funding
                         Wallet you can withdraw to your external wallet.
                       </p>
                     </div>

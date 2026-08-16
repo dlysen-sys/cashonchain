@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Tabs, TabList, Tab, TabPanel } from "react-tabs";
 import { site } from "../data/site.js";
+import NavIcon from "../components/NavIcon.jsx";
 import SettingsPanel from "../components/SettingsPanel.jsx";
 import Home from "../sections/Home.jsx";
 import About from "../sections/About.jsx";
@@ -37,7 +38,7 @@ export default function HomeLayout() {
               {site.nav.map((n) => (
                 <Tab key={n.id}>
                   <a href={`#${n.id}`}>
-                    <span className={`icon ${n.icon}`}></span>
+                    <NavIcon item={n} />
                     <span className="link">{n.label}</span>
                   </a>
                 </Tab>
