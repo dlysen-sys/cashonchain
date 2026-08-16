@@ -1,0 +1,60 @@
+# Cash On Chain (COC) app — public HTTPS for the built React/Vite SPA.
+#
+# Serves projects/coc/app/dist via nginx, published over a Cloudflare Tunnel (outbound-only,
+# no port-forwarding). Mirrors projects/orbix/app/docker-compose.yml.
+#
+# ── Deploy on the NAS (Synology Container Manager) ───────────────────────────
+#   1) Build the app:  cd projects/coc/app && npm run build
+#   2) Container Manager → Project → Create → point at this folder (projects/coc/app) → Build/Up.
+#      (Compose auto-loads app/.env in this folder, so ${TUNNEL_TOKEN} resolves.)
+#   3) Cloudflare Zero Trust dashboard → the tunnel whose token is in app/.env → Public Hostnames:
+#        app-testnet.cashonchain.network  →  Service: HTTP  →  URL: coc-app:80
+#      (HTTP, not HTTPS — TLS terminates at Cloudflare; the container speaks plain HTTP internally.)
+#
+#      ⚠ Do NOT map the apex `cashonchain.network` here. Production already runs on GitHub Pages
+#      (gh-pages branch, CNAME=cashonchain.network, Cloudflare proxying in front of Fastly).
+#      Pointing the apex at this tunnel would take the live site down. Use a subdomain.
+#
+# ── Apply an app update (no terminal) ────────────────────────────────────────
+#   Rebuild dist (step 1) → Container Manager → Container → coc-app → Restart.
+#   dist/ is bind-mounted read-only, so nginx serves the new files after a restart (no rebuild).
+#   THIS FILE or nginx.conf changed → Container Manager → Project → Build (bump deploy-stamp below).
+#
+# ── Host port ────────────────────────────────────────────────────────────────
+#   8091. 8090 is already taken on the NAS by orbix-app-testnet (verified 2026-08-15), so COC
+#   increments to the next free port. Only used for LAN smoke tests — the tunnel reaches
+#   coc-app:80 on the compose network and needs no published port.
+#
+# The TUNNEL_TOKEN is read from app/.env (gitignored) via ${TUNNEL_TOKEN} — never hardcode it here.
+
+services:
+  # Static SPA server. No backend — the app reads the chain directly via the RPC baked into the bundle.
+  coc-app:
+    image: nginx:alpine
+    container_name: coc-app
+    volumes:
+      - ./dist:/usr/share/nginx/html:ro        # the production build (rebuild + Restart to update)
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro  # SPA fallback + user root (see the file)
+    labels:
+      # Bump to force Container Manager's Build to recreate the container (changes the config hash).
+      com.coc.deploy-stamp: "2026-08-15"
+    restart: unless-stopped
+    init: true
+    # LAN smoke test: http://192.168.100.79:8091 (8090 is orbix-app-testnet).
+    ports: ["8091:80"]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # Public HTTPS for the SPA. Outbound-only; token in app/.env. The public-hostname → service
+  # mapping lives in the Cloudflare dashboard (token tunnel): <hostname> → HTTP → coc-app:80.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: coc-app-cloudflared
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+    depends_on:
+      - coc-app
+    restart: unless-stopped
+    init: true
