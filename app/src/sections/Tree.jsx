@@ -6,6 +6,7 @@ import { shortAddr } from "../lib/format.js";
 import { affiliateLink } from "../lib/affiliate.js";
 import { contractsFor } from "../config/contracts.js";
 import { accountsAbi, rewardsAbi } from "../config/abis.js";
+import CopyButton from "../components/CopyButton.jsx";
 
 const PAGE = 10;
 const ZERO = "0x0000000000000000000000000000000000000000";
@@ -177,6 +178,7 @@ function AffiliateLinkCard({ address }) {
 }
 
 /* ------------------------------ Affiliate tree ----------------------------- */
+
 function AffiliateTree({ address, accounts, rewards, chainId }) {
   return (
     <div className="cw-tokens">
@@ -239,6 +241,7 @@ function AffNode({ address, accounts, rewards, chainId, depth, you }) {
               {shortAddr(address)}
               {you && <span className="coc-tree__you"> you</span>}
             </span>
+            <CopyButton value={address} />
           </span>
         </td>
         <ActivatedCell rewards={rewards} address={address} chainId={chainId} />

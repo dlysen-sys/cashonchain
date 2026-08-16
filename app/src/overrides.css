@@ -299,6 +299,86 @@
   font-size: 12px;
 }
 
+/* ── "Add token to wallet" prompt ─────────────────────────────────────────────
+   Banner above the asset list, shown until the user adds the token or dismisses it.
+   The per-row pills reuse .cw-claim / .cw-auto-tag. */
+.coc-wallet .cw-addbanner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  margin-bottom: 10px;
+  border-left: 3px solid var(--cw-accent);
+}
+.coc-wallet .cw-addbanner__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 200px;
+}
+.coc-wallet .cw-addbanner__text strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+.coc-wallet .cw-addbanner__text span {
+  font-size: 12px;
+  opacity: 0.65;
+  line-height: 1.4;
+}
+.coc-wallet .cw-addbanner__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.coc-wallet .cw-addbanner__close {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  opacity: 0.45;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+.coc-wallet .cw-addbanner__close:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* Manual add-token fallback (wallets without EIP-747): label / value / copy rows. */
+.coc-wallet .cw-manualadd__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 8px;
+}
+.coc-wallet .cw-manualadd__label {
+  flex: 0 0 auto;
+  width: 92px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.55;
+}
+.coc-wallet .cw-manualadd__value {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  word-break: break-all;
+}
+
 /* Hide the side image on mobile — it otherwise stacks as a tall 50vh block. */
 @media (max-width: 1023px) {
   .coc-wallet-card .card-image {
@@ -593,6 +673,32 @@
 .coc-tree__addr {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+.coc-tree__copy {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: none;
+  border: none;
+  color: inherit;
+  opacity: 0.45;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+.coc-tree__copy:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.08);
+}
+.coc-tree__copy .la-check {
+  color: var(--cw-accent);
+  opacity: 1;
+}
 .coc-tree__you {
   font-size: 10px;
   text-transform: uppercase;
@@ -760,4 +866,238 @@
   font-size: 11.5px;
   line-height: 1.55;
   opacity: 0.6;
+}
+
+/* ── Market — product catalog + sales drawer ── */
+.coc-wallet .coc-mkt-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-top: 8px;
+}
+@media (max-width: 700px) {
+  .coc-wallet .coc-mkt-grid { grid-template-columns: 1fr; }
+}
+/* product card (a button, reset appearance) */
+.coc-wallet .coc-mkt-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+  text-align: left;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+.coc-wallet .coc-mkt-card:hover {
+  transform: translateY(-3px);
+  border-color: var(--cw-accent);
+}
+/* gradient hero used on the card + (tall) in the drawer */
+.coc-mkt-hero {
+  position: relative;
+  width: 100%;
+  height: 130px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+/* Drawer hero: show the FULL image, uncropped (natural aspect ratio). min-height keeps the
+   emoji-only fallback looking like a banner; real images set their own (taller) height. */
+.coc-mkt-hero--tall {
+  height: auto;
+  min-height: 160px;
+  border-radius: 14px;
+  overflow: hidden;
+  margin-bottom: 18px;
+}
+.coc-mkt-hero--tall img {
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+  display: block;
+}
+.coc-mkt-hero img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.coc-mkt-hero-emoji {
+  font-size: 62px;
+  line-height: 1;
+  filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.45));
+}
+.coc-mkt-hero--tall .coc-mkt-hero-emoji { font-size: 92px; }
+.coc-wallet .coc-mkt-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px 16px;
+}
+.coc-wallet .coc-mkt-name {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+.coc-wallet .coc-mkt-short {
+  font-size: 12.5px;
+  line-height: 1.5;
+  opacity: 0.72;
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.coc-wallet .coc-mkt-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: auto;
+  padding-top: 6px;
+}
+.coc-wallet .coc-mkt-price {
+  font-family: "Orbitron", ui-monospace, monospace;
+  font-weight: 700;
+  color: var(--cw-accent);
+  font-size: 14px;
+}
+.coc-wallet .coc-mkt-view {
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.8;
+  white-space: nowrap;
+}
+.coc-wallet .coc-mkt-view .la { font-size: 12px; }
+
+/* drawer sales copy */
+.coc-wallet .coc-mkt-headline {
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1.2;
+  margin: 0 0 8px;
+}
+.coc-wallet .coc-mkt-sub {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--cw-accent);
+  margin: 0 0 14px;
+}
+.coc-wallet .coc-mkt-body {
+  font-size: 13.5px;
+  line-height: 1.65;
+  opacity: 0.82;
+  margin: 0 0 16px;
+}
+.coc-wallet .coc-mkt-bullets {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.coc-wallet .coc-mkt-bullets li {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.coc-wallet .coc-mkt-bullets .la {
+  color: var(--cw-accent);
+  font-size: 15px;
+  margin-top: 2px;
+  flex: 0 0 auto;
+}
+.coc-wallet .coc-mkt-close {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0 0 16px;
+}
+.coc-wallet .coc-mkt-pricebar {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  margin-bottom: 14px;
+}
+.coc-wallet .coc-mkt-pricebar-label {
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+.coc-wallet .coc-mkt-pricebar-value {
+  font-family: "Orbitron", ui-monospace, monospace;
+  font-weight: 800;
+  font-size: 20px;
+  color: var(--cw-accent);
+}
+.coc-wallet .coc-mkt-contact {
+  text-align: center;
+  font-size: 12.5px;
+  opacity: 0.7;
+  margin-top: 14px;
+}
+.coc-wallet .coc-mkt-contact a { color: var(--cw-accent); }
+
+/* Inline-SVG nav icons (e.g. Market's storefront) — center them in the .icon slot and
+   match the font-glyph size, inheriting the active/hover accent via currentColor. */
+.header .coc-nav-svg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.header .coc-nav-svg svg {
+  width: 21px;
+  height: 21px;
+}
+
+/* ── Account → Total Income Rewards report ── */
+.coc-wallet .coc-income-report {
+  margin: 0 0 18px;
+  padding: 16px 18px;
+}
+.coc-wallet .coc-income-total {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.coc-wallet .coc-income-total .cw-total-value {
+  font-family: "Orbitron", ui-monospace, monospace;
+  font-weight: 800;
+  color: var(--cw-accent);
+  font-size: 18px;
+  white-space: nowrap;
+}
+.coc-wallet .coc-income-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.coc-wallet .coc-income-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+.coc-wallet .coc-income-row span:first-child {
+  opacity: 0.7;
+}
+.coc-wallet .coc-income-row span:last-child {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }

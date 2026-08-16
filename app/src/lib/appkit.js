@@ -30,11 +30,30 @@ export const networks = [bsc, bscTestnet, anvil];
 const wagmiAdapter = new WagmiAdapter({ networks, projectId, ssr: false });
 export const wagmiConfig = wagmiAdapter.wagmiConfig;
 
+// Token logo handed to the wallet by wallet_watchAsset. Must be an ABSOLUTE public URL — the wallet
+// app fetches it from its own context, so window.location.origin would break on localhost.
+const TOKEN_IMAGE = "https://cashonchain.network/logo.png";
+
 // Tokens shown on the Wallet page. Addresses are the BSC-mainnet tokens (etched mocks on local anvil).
+// `addable` = offer "add to wallet" (EIP-747 wallet_watchAsset) for it; ERC-20 only, native BNB can't.
 export const TOKENS = [
   { symbol: "BNB", kind: "native", decimals: 18 },
-  { symbol: "USDT", kind: "erc20", address: "0x55d398326f99059fF775485246999027B3197955", decimals: 18 },
-  { symbol: "COCT", kind: "erc20", address: "0x13c6f832A8eA9D450FBc04c73b59D2A66ae12A77", decimals: 18 },
+  {
+    symbol: "USDT",
+    kind: "erc20",
+    address: "0x55d398326f99059fF775485246999027B3197955",
+    decimals: 18,
+    addable: true,
+    image: TOKEN_IMAGE,
+  },
+  {
+    symbol: "COCT",
+    kind: "erc20",
+    address: "0x13c6f832A8eA9D450FBc04c73b59D2A66ae12A77",
+    decimals: 18,
+    addable: true,
+    image: TOKEN_IMAGE,
+  },
 ];
 
 createAppKit({

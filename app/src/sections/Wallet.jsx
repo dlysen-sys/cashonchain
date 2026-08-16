@@ -11,6 +11,8 @@ import { erc20Abi, formatUnits, parseUnits } from "viem";
 import { QRCodeSVG } from "qrcode.react";
 import { wagmiConfig, TOKENS } from "../lib/appkit.js";
 import { amt, shortAddr, usd } from "../lib/format.js";
+import { AddTokenBanner, AddTokenPill } from "../components/AddTokenButton.jsx";
+import CopyButton from "../components/CopyButton.jsx";
 
 // Themed wallet panel — mirrors the ORBIX Wallet page (total card, receive/send, token list, disconnect)
 // in the COC template's design. Adopts the same section shell (card-inner > card-container > card-wrap >
@@ -24,7 +26,20 @@ export default function Wallet() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
   const [copied, setCopied] = useState(false);
-  const [sheet, setSheet] = useState(null); // 'receive' | 'send' | null
+  const [sheet, setSheet] = useState(null); // 'receive' | 'send' | 'add' | null
+  const [addTarget, setAddTarget] = useState(null); // token whose manual add-instructions to show
+
+  // Opened when a wallet can't do EIP-747 wallet_watchAsset (many WalletConnect mobile wallets):
+  // fall back to showing the details the user needs to paste into "add custom token".
+  const openManualAdd = useCallback((token) => {
+    setAddTarget(token);
+    setSheet("add");
+  }, []);
+
+  const closeSheet = () => {
+    setSheet(null);
+    setAddTarget(null);
+  };
 
   const loadBalances = useCallback(async () => {
     if (!isConnected || !address) {
@@ -149,10 +164,26 @@ export default function Wallet() {
                       <div className="cw-eyebrow">
                         Assets {err && <span className="cw-err">{err}</span>}
                       </div>
+
+                      <AddTokenBanner
+                        tokens={TOKENS}
+                        account={address}
+                        chainId={chainId}
+                        onNeedManual={openManualAdd}
+                      />
+
                       {rows.map((r) => (
                         <div className="cw-token card-box" key={r.symbol}>
                           <span className="cw-token-sym">{r.symbol}</span>
-                          <span className="cw-token-amt">{loading ? "…" : amt(r.amount)}</span>
+                          <span className="cw-token-right">
+                            <span className="cw-token-amt">{loading ? "…" : amt(r.amount)}</span>
+                            <AddTokenPill
+                              token={r}
+                              account={address}
+                              chainId={chainId}
+                              onNeedManual={openManualAdd}
+                            />
+                          </span>
                         </div>
                       ))}
                     </div>
@@ -179,15 +210,19 @@ export default function Wallet() {
             <button
               type="button"
               className="cw-modal-close"
-              onClick={() => setSheet(null)}
+              onClick={closeSheet}
               aria-label="Back"
             >
               <i className="la la-arrow-left"></i>
             </button>
-            <span className="cw-modal-title">{sheet === "receive" ? "Receive" : "Send"}</span>
+            <span className="cw-modal-title">
+              {sheet === "receive" ? "Receive" : sheet === "add" ? `Add ${addTarget?.symbol ?? "token"}` : "Send"}
+            </span>
           </div>
           <div className="cw-modal-body">
-            {sheet === "receive" ? (
+            {sheet === "add" ? (
+              <ManualAddToken token={addTarget} chainId={chainId} />
+            ) : sheet === "receive" ? (
               <div className="cw-receive">
                 <p className="cw-modal-sub">
                   Scan or copy your address to receive USDT / COCT / BNB on the connected network.
@@ -208,6 +243,37 @@ export default function Wallet() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// Fallback for wallets without EIP-747 (wallet_watchAsset) — commonly WalletConnect mobile sessions.
+// Shows exactly the fields a wallet's "add custom token" screen asks for, each copyable.
+const NETWORK_NAMES = { 56: "BNB Smart Chain (BEP-20)", 97: "BSC Testnet", 31337: "COC Anvil" };
+
+function ManualAddToken({ token, chainId }) {
+  if (!token) return null;
+  const network = NETWORK_NAMES[chainId] ?? `Chain ${chainId}`;
+  const fields = [
+    { label: "Network", value: network, copy: false },
+    { label: "Contract address", value: token.address, mono: true },
+    { label: "Symbol", value: token.symbol },
+    { label: "Decimals", value: String(token.decimals) },
+  ];
+
+  return (
+    <div className="cw-manualadd">
+      <p className="cw-modal-sub">
+        Your wallet can’t add tokens automatically. Open its “Add custom token” screen and paste these
+        details — make sure it’s set to {network}.
+      </p>
+      {fields.map((f) => (
+        <div className="cw-manualadd__row card-box" key={f.label}>
+          <span className="cw-manualadd__label">{f.label}</span>
+          <span className={f.mono ? "cw-manualadd__value cw-mono" : "cw-manualadd__value"}>{f.value}</span>
+          {f.copy !== false && <CopyButton value={f.value} title={f.label} />}
+        </div>
+      ))}
     </div>
   );
 }
