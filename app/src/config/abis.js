@@ -255,4 +255,22 @@ export const assetsAbi = [
     ],
     outputs: [],
   },
+  // Per-account withdrawal gate (public mapping). assets.sol requires
+  // `block.timestamp > coolDown[account]` — a UNIX deadline, not a "last call" stamp.
+  {
+    type: "function",
+    name: "coolDown",
+    stateMutability: "view",
+    inputs: [{ name: "", type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  // Cooldown length in seconds. 0 disables the gate entirely, even if coolDown[account]
+  // still holds a future deadline from an earlier deposit.
+  {
+    type: "function",
+    name: "withdrawal_cooldown",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint256" }],
+  },
 ];

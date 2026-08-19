@@ -14,6 +14,7 @@ import MembershipCard, { addrToCardId } from "../components/MembershipCard.jsx";
 import { contractsFor } from "../config/contracts.js";
 import { accountsAbi, rewardsAbi, assetsAbi } from "../config/abis.js";
 import { getStoredSponsor, clearStoredSponsor } from "../lib/affiliate.js";
+import { useCooldown } from "../hooks/useCooldown.js";
 
 const RANKS = ["Silver", "Gold", "Platinum", "Diamond", "Emerald", "Black Diamond"];
 const MIN_DEPOSIT = 20; // USDT — smallest membership tier; block anything below this in the UI
@@ -55,6 +56,8 @@ export default function Account() {
             { address: c.rewards, abi: rewardsAbi, functionName: "dailyPassiveTotal", args: [address], chainId },
             { address: c.rewards, abi: rewardsAbi, functionName: "directPassiveTotal", args: [address], chainId },
             { address: c.rewards, abi: rewardsAbi, functionName: "lineIncomeTotal", args: [address], chainId },
+            { address: c.assets, abi: assetsAbi, functionName: "coolDown", args: [address], chainId },
+            { address: c.assets, abi: assetsAbi, functionName: "withdrawal_cooldown", chainId },
           ]
         : [],
     // Re-read every 15s so accruing pending rewards (daily/direct/line) tick up without a manual reload.
@@ -72,6 +75,11 @@ export default function Account() {
   const dailyPassiveEarned = info?.[8]?.result ?? 0n; // lifetime daily-passive collected
   const directPassiveEarned = info?.[9]?.result ?? 0n; // lifetime direct-passive collected
   const lineIncomeEarned = info?.[10]?.result ?? 0n; // lifetime line-income collected
+  // Withdrawal gate (assets.sol): coolDown[account] is an absolute UNIX deadline, enforced only while
+  // withdrawal_cooldown > 0. When the admin disables it, ignore any stale deadline still on record.
+  const withdrawDeadline = info?.[11]?.result ?? 0n;
+  const cooldownSecs = info?.[12]?.result ?? 0n;
+  const withdrawCooldown = useCooldown(cooldownSecs > 0n ? withdrawDeadline : 0n);
   // Total income rewards = sum of the five earning streams (agent reward is separate).
   const totalIncome =
     directReferralEarned + overrideEarned + dailyPassiveEarned + directPassiveEarned + lineIncomeEarned;
@@ -171,10 +179,24 @@ export default function Account() {
   const [txBusy, setTxBusy] = useState(false);
   const [txMsg, setTxMsg] = useState(null); // { type: 'success'|'error', text }
 
-  const prettyErr = (e) =>
-    e?.name === "UserRejectedRequestError" || /reject|denied/i.test(e?.message || "")
-      ? "You rejected the request in your wallet."
-      : e?.shortMessage || e?.message || "Transaction failed";
+  // assets.sol revert strings → plain English. The UI pre-gates these, but a skewed browser clock or
+  // a stale read can still let one through, and "COOLDOWN" alone means nothing to a user.
+  const CONTRACT_ERRORS = {
+    COOLDOWN: "Withdrawal cooldown is still active — try again once the timer ends.",
+    INSUFFICIENT_BALANCE: "Not enough funds available to pay this out right now.",
+    BAD_DENOMINATION: "That amount isn't an allowed withdrawal denomination.",
+    NET_ZERO: "The net payout after fees would be zero.",
+  };
+
+  const prettyErr = (e) => {
+    if (e?.name === "UserRejectedRequestError" || /reject|denied/i.test(e?.message || ""))
+      return "You rejected the request in your wallet.";
+    const blob = `${e?.shortMessage ?? ""} ${e?.message ?? ""}`;
+    for (const [code, text] of Object.entries(CONTRACT_ERRORS)) {
+      if (blob.includes(code)) return text;
+    }
+    return e?.shortMessage || e?.message || "Transaction failed";
+  };
 
   const openSheet = (which) => {
     setSheet(which);
@@ -691,18 +713,37 @@ export default function Account() {
                 <p className="cw-modal-sub">
                   Pick a denomination — no vault fee; a 24h cooldown applies (COCTAssets):
                 </p>
+                {withdrawCooldown.active && (
+                  <p className="cw-modal-sub cw-cooldown">
+                    <i className="la la-clock-o"></i> Cooldown active — next withdrawal in{" "}
+                    <strong>{withdrawCooldown.label}</strong>. Every deposit restarts it.
+                  </p>
+                )}
                 <div className="cw-actions" style={{ flexWrap: "wrap" }}>
-                  {[20, 50, 100].map((d) => (
-                    <button
-                      key={d}
-                      type="button"
-                      className="cw-btn cw-btn--primary"
-                      onClick={() => doWithdraw(d)}
-                      disabled={txBusy || usdtVault < parseUnits(String(d), 18)}
-                    >
-                      ${d}
-                    </button>
-                  ))}
+                  {[20, 50, 100].map((d) => {
+                    const short = usdtVault < parseUnits(String(d), 18);
+                    // Mirror the on-chain requires so a doomed call can't be fired: COOLDOWN and
+                    // INSUFFICIENT_BALANCE both revert in assets.sol._withdrawTo.
+                    const blocked = txBusy || withdrawCooldown.active || short;
+                    return (
+                      <button
+                        key={d}
+                        type="button"
+                        className="cw-btn cw-btn--primary"
+                        onClick={() => doWithdraw(d)}
+                        disabled={blocked}
+                        title={
+                          withdrawCooldown.active
+                            ? `Cooldown active — available in ${withdrawCooldown.label}`
+                            : short
+                              ? "Not enough in your Funding Wallet"
+                              : `Withdraw $${d} USDT`
+                        }
+                      >
+                        ${d}
+                      </button>
+                    );
+                  })}
                 </div>
               </>
             )}

@@ -299,6 +299,26 @@
   font-size: 12px;
 }
 
+/* Cooldown notice above the withdrawal denominations — explains why the tiers are disabled. */
+.coc-wallet .cw-cooldown {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-left: 3px solid #e0a95f;
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 12px;
+  opacity: 0.9;
+}
+.coc-wallet .cw-cooldown strong {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 700;
+}
+
 /* ── "Add token to wallet" prompt ─────────────────────────────────────────────
    Banner above the asset list, shown until the user adds the token or dismisses it.
    The per-row pills reuse .cw-claim / .cw-auto-tag. */
