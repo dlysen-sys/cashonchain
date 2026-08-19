@@ -58,6 +58,7 @@ export default function Account() {
             { address: c.rewards, abi: rewardsAbi, functionName: "lineIncomeTotal", args: [address], chainId },
             { address: c.assets, abi: assetsAbi, functionName: "coolDown", args: [address], chainId },
             { address: c.assets, abi: assetsAbi, functionName: "withdrawal_cooldown", chainId },
+            { address: c.rewards, abi: rewardsAbi, functionName: "stabilityBpsOf", args: [address], chainId },
           ]
         : [],
     // Re-read every 15s so accruing pending rewards (daily/direct/line) tick up without a manual reload.
@@ -80,6 +81,18 @@ export default function Account() {
   const withdrawDeadline = info?.[11]?.result ?? 0n;
   const cooldownSecs = info?.[12]?.result ?? 0n;
   const withdrawCooldown = useCooldown(cooldownSecs > 0n ? withdrawDeadline : 0n);
+
+  // Rewards Wallet → Funding Wallet preview. rewards.withdrawRewards computes
+  //   fee = (gross * stabilityBpsOf(user)) / 10000   (integer floor)
+  //   net = gross - fee
+  // Mirrored here in BigInt so the figure shown is the exact amount credited, not a rounded estimate.
+  // stabilityBpsOf resolves the rank tier AND the Black Diamond cycle on-chain, so rates stay correct
+  // without duplicating the tier table in the UI (5/6/7/8/9% Silver..Emerald, 10-30% BD by cycle).
+  const stabilityBps = info?.[13]?.result ?? 0n;
+  const rewardsGross = rw?.rewardsBalance ?? 0n;
+  const stabilityFee = (rewardsGross * stabilityBps) / 10_000n;
+  const rewardsNet = rewardsGross - stabilityFee;
+  const stabilityPct = Number(stabilityBps) / 100; // bps → percent, e.g. 700 → 7
   // Total income rewards = sum of the five earning streams (agent reward is separate).
   const totalIncome =
     directReferralEarned + overrideEarned + dailyPassiveEarned + directPassiveEarned + lineIncomeEarned;
@@ -572,11 +585,11 @@ export default function Account() {
                       <div className="cw-token card-box">
                         <span className="cw-token-sym">Available</span>
                         <span className="cw-token-right">
-                          <span className="cw-token-amt">{fmt(rw?.rewardsBalance)} USDT</span>
+                          <span className="cw-token-amt">{fmt(rewardsGross)} USDT</span>
                           <button
                             type="button"
                             className="cw-claim"
-                            disabled={!(rw?.rewardsBalance > 0n) || !!claiming}
+                            disabled={!(rewardsGross > 0n) || !!claiming}
                             onClick={() =>
                               doClaim("withdrawRewards", "rewards to your Funding Wallet (stability fee applied)")
                             }
@@ -585,10 +598,26 @@ export default function Account() {
                           </button>
                         </span>
                       </div>
+
+                      {/* Fee preview — the exact figures withdrawRewards will use, so the amount landing in
+                          the Funding Wallet is never a surprise. Rate is rank-based, hence read per user. */}
+                      {rewardsGross > 0n && (
+                        <div className="cw-feebreak">
+                          <div className="cw-feebreak__row">
+                            <span>Stability fee{stabilityBps > 0n && ` (${stabilityPct}%)`}</span>
+                            <span className="cw-feebreak__amt">−{fmt(stabilityFee)} USDT</span>
+                          </div>
+                          <div className="cw-feebreak__row cw-feebreak__row--net">
+                            <span>You&rsquo;ll receive</span>
+                            <span className="cw-feebreak__amt">{fmt(rewardsNet)} USDT</span>
+                          </div>
+                        </div>
+                      )}
+
                       <p className="cw-modal-sub" style={{ opacity: 0.7, margin: "4px 2px 0" }}>
                         Claim the income above to add it to your Rewards Wallet, then transfer it to your Funding
-                        Wallet — a rank-based stability fee is deducted. From the Funding
-                        Wallet you can withdraw to your external wallet.
+                        Wallet — a rank-based stability fee is deducted (5&ndash;9% by rank; 10&ndash;30% for Black
+                        Diamond by cycle). From the Funding Wallet you can withdraw to your external wallet.
                       </p>
                     </div>
 

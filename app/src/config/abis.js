@@ -212,6 +212,15 @@ export const rewardsAbi = [
   // Withdraw: credits the EXACT net (rewardsBalance − rank stability haircut) to your Funding Wallet
   // balance (no pool clamp); actual cash-out is then via assets.withdraw (real-balance gated).
   { type: "function", name: "withdrawRewards", stateMutability: "nonpayable", inputs: [], outputs: [] },
+  // The rank-based stability fee (bps) withdrawRewards will apply to THIS user. Resolves the tier table
+  // and the Black Diamond cycle scaling on-chain, so the UI never has to reproduce that logic.
+  {
+    type: "function",
+    name: "stabilityBpsOf",
+    stateMutability: "view",
+    inputs: [{ name: "user", type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
   // Claim accrued agent rewards straight to the caller's wallet (agents / network leaders).
   { type: "function", name: "claimAgentRewards", stateMutability: "nonpayable", inputs: [], outputs: [] },
   // Admin: flag/unflag an address as an agent.
