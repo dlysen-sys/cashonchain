@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="rimGrad" x1="0.15" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#e8f455"/><stop offset="0.35" stop-color="#a6d92a"/>
+      <stop offset="0.7" stop-color="#4f9c16"/><stop offset="1" stop-color="#8ccf28"/>
+    </linearGradient>
+    <linearGradient id="rimGrad2" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#c6ea3f"/><stop offset="0.5" stop-color="#4f9c16"/>
+      <stop offset="1" stop-color="#9ad62b"/>
+    </linearGradient>
+    <linearGradient id="ringGrad" x1="0.25" y1="0" x2="0.75" y2="1">
+      <stop offset="0" stop-color="#1d9432"/><stop offset="0.45" stop-color="#0a6b21"/>
+      <stop offset="1" stop-color="#04430f"/>
+    </linearGradient>
+    <linearGradient id="stripeGrad" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#93e04d"/><stop offset="0.45" stop-color="#3cae2c"/>
+      <stop offset="1" stop-color="#0c691e"/>
+    </linearGradient>
+    <linearGradient id="arrowGrad" x1="0.1" y1="0" x2="0.9" y2="1">
+      <stop offset="0" stop-color="#63cc3d"/><stop offset="0.45" stop-color="#209a2b"/>
+      <stop offset="1" stop-color="#06541a"/>
+    </linearGradient>
+    <linearGradient id="whiteGrad" x1="0.1" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#ffffff"/><stop offset="0.6" stop-color="#f0f0f0"/>
+      <stop offset="1" stop-color="#c4c4c4"/>
+    </linearGradient>
+  </defs>
+  <g>
+    <circle cx="512" cy="512" r="484" fill="none" stroke="url(#rimGrad)" stroke-width="18"/>
+    <circle cx="512" cy="512" r="458" fill="none" stroke="url(#rimGrad2)" stroke-width="10"/>
+    <path d="M 504.3 951.9 A 440.0 440.0 0 0 1 496.6 72.3 L 500.5 182.2 A 330.0 330.0 0 0 0 506.2 841.9 Z" fill="url(#ringGrad)"/>
+    <path d="M 484.3 828.8 A 318.0 318.0 0 0 1 478.8 195.7 L 481.5 221.6 A 292.0 292.0 0 0 0 486.6 802.9 Z" fill="url(#ringGrad)"/>
+    <path d="M 512.0 198.0 A 314.0 314.0 0 0 1 764.4 325.2 L 746.7 338.3 A 292.0 292.0 0 0 0 512.0 220.0 Z" fill="url(#stripeGrad)"/>
+    <path d="M 512.0 167.0 A 345.0 345.0 0 0 1 789.3 306.8 L 771.6 319.9 A 323.0 323.0 0 0 0 512.0 189.0 Z" fill="url(#stripeGrad)"/>
+    <path d="M 512.0 136.0 A 376.0 376.0 0 0 1 814.3 288.3 L 796.6 301.4 A 354.0 354.0 0 0 0 512.0 158.0 Z" fill="url(#stripeGrad)"/>
+    <path d="M 512.0 105.0 A 407.0 407.0 0 0 1 839.2 269.9 L 821.5 283.0 A 385.0 385.0 0 0 0 512.0 127.0 Z" fill="url(#stripeGrad)"/>
+    <path d="M 512.0 72.0 A 440.0 440.0 0 0 1 865.7 250.3 L 846.4 264.6 A 416.0 416.0 0 0 0 512.0 96.0 Z" fill="url(#stripeGrad)"/>
+    <path d="M 861.1 779.9 A 440.0 440.0 0 0 1 519.7 951.9 L 517.8 841.9 A 330.0 330.0 0 0 0 773.8 712.9 Z" fill="url(#ringGrad)"/>
+    <path d="M 752.0 720.6 A 318.0 318.0 0 0 1 539.7 828.8 L 537.4 802.9 A 292.0 292.0 0 0 0 732.4 703.6 Z" fill="url(#ringGrad)"/>
+    <path d="M 522.0 545.0 L 876.8 266.0 A 440.0 440.0 0 0 1 876.8 758.0 L 645.0 612.0 L 522.0 612.0 Z" fill="url(#arrowGrad)"/>
+    <path d="M 712.0 705.1 A 278.0 278.0 0 1 1 712.0 318.9 L 612.7 414.7 A 140.0 140.0 0 1 0 612.7 609.3 Z" fill="url(#whiteGrad)"/>
+  </g>
+</svg>
